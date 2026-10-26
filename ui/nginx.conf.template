@@ -1,0 +1,34 @@
+server {
+  listen 8080;
+  server_tokens off;
+  root /usr/share/nginx/html;
+  client_max_body_size 16k;
+  add_header Cache-Control no-store always;
+  add_header X-Content-Type-Options nosniff always;
+  add_header Referrer-Policy no-referrer always;
+  add_header X-Frame-Options DENY always;
+  add_header Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" always;
+  add_header Strict-Transport-Security "max-age=31536000" always;
+  location = /health { access_log off; return 200 'alive'; }
+  location = /ready {
+    proxy_pass ${API_ORIGIN}/ready;
+    proxy_set_header Host localhost;
+  }
+  location ~ ^/(api|auth)/ {
+    resolver 127.0.0.11 valid=30s ipv6=off;
+    set $upstream "${API_ORIGIN}";
+    proxy_pass $upstream$request_uri;
+    proxy_set_header Host ${PUBLIC_HOST};
+    proxy_set_header X-Forwarded-Proto ${PUBLIC_SCHEME};
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header Connection "";
+    proxy_ssl_server_name on;
+    proxy_ssl_verify on;
+    proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+    proxy_read_timeout 60s;
+    proxy_connect_timeout 15s;
+    proxy_hide_header X-Powered-By;
+    access_log off;
+  }
+  location / { try_files $uri $uri/ /index.html; }
+}

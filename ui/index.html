@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Hardware administration</title><link rel="stylesheet" href="/style.css"><script defer src="/app.js"></script></head>
+<body><header><h1>Hardware administration</h1><span id="identity"></span><button id="signout" hidden>Sign out</button></header>
+<section id="login"><h2>Administrator sign in</h2><a href="/auth/login">Sign in with Microsoft Entra ID</a><form id="local-login" hidden><label>Local development code<input name="code" type="password" minlength="20" autocomplete="off" required></label><button>Sign in locally</button></form></section>
+<div id="app" hidden><nav aria-label="Administration"><button data-screen="dashboard">Dashboard</button><button data-screen="hardware">Hardware</button><button data-screen="projects">Project inventory</button><button data-screen="adjustments">Stock adjustments</button><button data-screen="checkouts">Checkout management</button><button data-screen="transactions">Transaction history</button></nav><main id="screen"></main></div>
+<p id="message" role="status" aria-live="polite"></p>
+<dialog id="editor"><form id="edit-form"><h2 id="edit-title"></h2><div id="current"></div><div id="fields"></div><button type="button" id="cancel">Cancel</button><button id="save">Review and confirm</button></form></dialog>
+</body></html>
