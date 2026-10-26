@@ -2,6 +2,6 @@
 pytest==9.0.2
 pytest-cov==7.0.0
 ruff==0.15.6
-pip-audit==2.10.0
+pip-audit==2.10.1
 playwright==1.58.0
 PyYAML==6.0.3
