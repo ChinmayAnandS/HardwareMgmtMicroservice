@@ -30,7 +30,7 @@ jobs:
       - run: |
           ENVIRONMENT=test MONGO_URI=mongodb://localhost:27017 PYTHONPATH=backend python scripts/export-openapi.py
       - if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with: {name: test-results, path: test-results/}
       - if: failure()
         run: docker compose logs --no-color
@@ -52,7 +52,7 @@ jobs:
           ignore-unfixed: true
           exit-code: '1'
       - run: docker save hardware-api:${{ github.sha }} hardware-ui:${{ github.sha }} -o images.tar
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with: {name: scanned-images, path: images.tar, retention-days: 2}
   deploy:
     needs: verify
