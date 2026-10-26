@@ -1,4 +1,4 @@
-FROM nginxinc/nginx-unprivileged:1.28-alpine
+FROM nginxinc/nginx-unprivileged:1.31-alpine
 USER root
 COPY nginx.conf.template /etc/nginx/templates/site.conf.template
 COPY entrypoint.sh /entrypoint.sh
