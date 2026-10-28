@@ -1,0 +1,11 @@
+[tool.ruff]
+line-length = 120
+[tool.ruff.lint]
+select = ["E4", "E9", "F"]
+[tool.pytest.ini_options]
+pythonpath = ["backend"]
+testpaths = ["backend/tests"]
+markers = ["integration: requires real MongoDB replica set", "e2e: requires running local stack and browser"]
+
+[tool.ruff.lint.per-file-ignores]
+"backend/tests/test_integration.py" = ["E402"]

@@ -1,0 +1,4 @@
+[
+  {"name":"Development laptop","category":"Computers","description":"Pool of identical laptops","asset_tag":"POOL-LAPTOP-01","serial":"","total":12,"reason":"Initial inventory import"},
+  {"name":"USB-C dock","category":"Accessories","description":"Shared docking stations","asset_tag":"POOL-DOCK-01","serial":"","total":20,"reason":"Initial inventory import"}
+]

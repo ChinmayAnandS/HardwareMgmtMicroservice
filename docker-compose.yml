@@ -1,0 +1,79 @@
+services:
+  mongo:
+    image: mongo:8.0
+    entrypoint: ["bash", "-ec", "cp /run/secrets/mongo_key /tmp/mongo-key; chmod 400 /tmp/mongo-key; chown mongodb:mongodb /tmp/mongo-key; exec docker-entrypoint.sh mongod --replSet rs0 --bind_ip_all --keyFile /tmp/mongo-key"]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/mongo_root
+    secrets: [mongo_root, mongo_key]
+    volumes: [mongo-data:/data/db]
+    healthcheck:
+      test: ["CMD", "mongosh", "--host", "mongo", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+  init:
+    image: mongo:8.0
+    depends_on:
+      mongo: {condition: service_healthy}
+    entrypoint: ["bash", "-ec", "mongosh --norc --host mongo --file /scripts/init-db.js; MONGO_DATABASE=hardware_test mongosh --norc --host mongo --file /scripts/init-db.js"]
+    secrets: [mongo_root, mongo_app]
+    volumes: [./scripts:/scripts:ro]
+  api:
+    build: ./backend
+    depends_on:
+      init: {condition: service_completed_successfully}
+    environment:
+      ENVIRONMENT: local
+      PUBLIC_ORIGIN: http://localhost:8080
+      MONGO_DATABASE: hardware
+      DEV_LOGIN_CODE_FILE: /run/secrets/login_code
+      MONGO_URI_FILE: /tmp/mongo-uri
+      SQL_MOCK_DATA_FILE: /app/mock-sql-data.json
+    # Generate the URI at runtime; it is never persisted in source or an env file.
+    entrypoint: ["sh", "-ec", "umask 077; python -c 'from pathlib import Path; p=Path(\"/run/secrets/mongo_app\").read_text().strip(); Path(\"/tmp/mongo-uri\").write_text(\"mongodb://hardware_app:\"+p+\"@mongo:27017/hardware?replicaSet=rs0&authSource=hardware\")'; exec uvicorn app.asgi:app --host 0.0.0.0 --port 8000 --no-access-log --no-proxy-headers"]
+    secrets: [mongo_app, login_code]
+    volumes:
+      - ./backend/mock-sql-data.json:/app/mock-sql-data.json:ro
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+  ui:
+    build: ./ui
+    depends_on:
+      api: {condition: service_healthy}
+    ports: [127.0.0.1:8080:8080]
+    environment:
+      API_ORIGIN: http://api:8000
+      PUBLIC_HOST: localhost
+      PUBLIC_SCHEME: http
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+  tests:
+    network_mode: service:ui
+    profiles: [test]
+    build:
+      context: .
+      dockerfile: e2e/Dockerfile
+    depends_on:
+      ui: {condition: service_healthy}
+    environment:
+      ENVIRONMENT: test
+      MONGO_DATABASE: hardware_test
+      MONGO_URI_FILE: /tmp/test-uri
+      ROOT_PASSWORD_FILE: /run/secrets/mongo_root
+      TEST_BASE_URL: http://localhost:8080
+      DEV_LOGIN_CODE_FILE: /run/secrets/login_code
+    secrets: [mongo_app, mongo_root, login_code]
+    volumes: [./test-results:/results]
+secrets:
+  mongo_root: {file: .secrets/mongo-root}
+  mongo_app: {file: .secrets/mongo-app}
+  mongo_key: {file: .secrets/mongo-key}
+  login_code: {file: .secrets/login-code}
+volumes:
+  mongo-data:

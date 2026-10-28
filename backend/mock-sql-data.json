@@ -1,0 +1,25 @@
+[
+  {
+    "source_unit": "Austin",
+    "vendor": "Dell Technologies",
+    "commodity": "Laptop computers",
+    "category": "Computer",
+    "quantity": 42,
+    "unit_price": 1250.0
+  },
+  {
+    "source_unit": "Dallas",
+    "vendor": "CDW Government",
+    "commodity": "Business laptop equipment",
+    "category": "Computer",
+    "quantity": 18,
+    "unit_price": 1180.0
+  },
+  {
+    "source_unit": "Texas",
+    "vendor": "Microsoft",
+    "business_line": "Cloud services",
+    "category": "Computer",
+    "monthly_charges": 8750.0
+  }
+]

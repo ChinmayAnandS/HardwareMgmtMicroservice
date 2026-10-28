@@ -1,0 +1,13 @@
+.git
+.secrets
+.env
+.env.*
+__pycache__
+**/__pycache__
+.pytest_cache
+.venv
+node_modules
+test-results
+.coverage*
+htmlcov
+SOURCE.md
