@@ -38,9 +38,19 @@ A pool supports up to 200 distinct project IDs, including historical zero alloca
 
 ## Local setup
 
-Prerequisites: Docker Engine/Desktop with Compose v2.24+ and Python 3.12+. Run commands from this directory.
+Prerequisites: Docker Engine/Desktop with Compose v2.24+, Python 3.12+, and the Linux ODBC build toolchain when installing Python dependencies directly on the host. On Ubuntu/Debian, install:
 
 ```bash
+sudo apt-get update
+sudo apt-get install -y build-essential unixodbc-dev
+```
+
+Create a virtual environment before installing project dependencies, then run the stack from this directory:
+
+```bash
+python -m venv .venv
+. .venv/bin/activate
+pip install -r backend/requirements-dev.txt
 python scripts/local-secrets.py
 docker compose up -d --build --wait ui
 ```

@@ -18,6 +18,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: '3.12', cache: pip, cache-dependency-path: backend/requirements-dev.txt}
+      - name: Install Linux ODBC build dependencies for pyodbc
+        run: sudo apt-get update && sudo apt-get install -y unixodbc-dev build-essential
       - run: pip install -r backend/requirements-dev.txt
       - run: ruff check backend scripts infra e2e
       - run: pip-audit -r backend/requirements.txt
