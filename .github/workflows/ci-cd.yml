@@ -1,8 +1,9 @@
 name: verify-build-deploy
 on:
   pull_request:
+    branches: [main, dev]
   push:
-    branches: [main, develop]
+    branches: [main, dev]
   workflow_dispatch:
 permissions:
   contents: read
@@ -57,7 +58,7 @@ jobs:
         with: {name: scanned-images, path: images.tar, retention-days: 2}
   deploy:
     needs: verify
-    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
