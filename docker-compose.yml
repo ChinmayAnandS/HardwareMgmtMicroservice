@@ -14,7 +14,7 @@ services:
       retries: 30
     restart: unless-stopped
   init:
-    image: mongo:7.0
+    image: mongo:8.0
     depends_on:
       mongo: {condition: service_healthy}
     entrypoint: ["bash", "-ec", "mongosh --norc --host mongo --file /scripts/init-db.js; MONGO_DATABASE=hardware_test mongosh --norc --host mongo --file /scripts/init-db.js"]

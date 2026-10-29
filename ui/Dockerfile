@@ -1,4 +1,4 @@
-FROM nginxinc/nginx-unprivileged:1.28-alpine
+FROM nginxinc/nginx-unprivileged:stable-alpine
 USER root
 # Apply security updates from the configured Alpine repositories.
 RUN apk upgrade --no-cache
