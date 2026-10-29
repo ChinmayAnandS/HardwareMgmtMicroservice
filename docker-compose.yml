@@ -1,6 +1,6 @@
 services:
   mongo:
-    image: mongo:8.0
+    image: mongo:7.0
     entrypoint: ["bash", "-ec", "cp /run/secrets/mongo_key /tmp/mongo-key; chmod 400 /tmp/mongo-key; chown mongodb:mongodb /tmp/mongo-key; exec docker-entrypoint.sh mongod --replSet rs0 --bind_ip_all --keyFile /tmp/mongo-key"]
     environment:
       MONGO_INITDB_ROOT_USERNAME: root
@@ -14,7 +14,7 @@ services:
       retries: 30
     restart: unless-stopped
   init:
-    image: mongo:8.0
+    image: mongo:7.0
     depends_on:
       mongo: {condition: service_healthy}
     entrypoint: ["bash", "-ec", "mongosh --norc --host mongo --file /scripts/init-db.js; MONGO_DATABASE=hardware_test mongosh --norc --host mongo --file /scripts/init-db.js"]

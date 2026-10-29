@@ -27,6 +27,12 @@ jobs:
       - run: node --check ui/app.js
       - run: |
           python scripts/local-secrets.py
+          ls -l .secrets
+          docker compose down -v || true
+          docker compose up -d --build mongo init || true
+          docker compose ps
+          docker compose logs mongo --tail=200 || true
+          docker compose logs init --tail=200 || true
           docker compose up -d --build --wait ui
           mkdir -p test-results
           chmod 777 test-results
