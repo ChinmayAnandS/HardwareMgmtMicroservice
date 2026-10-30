@@ -39,13 +39,14 @@ function select(name, label, values, value='') {
 }
 function openEditor(title, current, fields, submit) {
   $('edit-title').textContent = title;
+  $('edit-error').textContent = '';
   $('current').replaceChildren(node('strong','Current values'), node('pre', JSON.stringify(current, null, 2)));
   $('fields').replaceChildren(...fields, field('reason','Reason (required)'));
   $('edit-form').onsubmit = async event => {
     event.preventDefault(); if (busy || !confirm('Confirm this administrative change? Current values are shown above.')) return;
-    busy = true; $('save').disabled = true;
+    busy = true; $('save').disabled = true; $('edit-error').textContent = '';
     try { await submit(Object.fromEntries(new FormData(event.target))); $('editor').close(); message('Change saved with audit record.'); await render(); }
-    catch (e) { message(e.message); } finally { busy = false; $('save').disabled = false; }
+    catch (e) { $('edit-error').textContent = e.message; message(e.message); } finally { busy = false; $('save').disabled = false; }
   };
   $('editor').showModal();
 }
@@ -69,8 +70,30 @@ function searchToolbar(spec) {
 function qs(extra={}) { const q=new URLSearchParams({page,size:25,...filters,...extra}); for (const [k,v] of [...q]) if(!v) q.delete(k); return q; }
 function actions(...buttons) { const d=node('div'); d.append(...buttons); return d; }
 function auditFor(hardware_id,project_id) { screen='transactions';page=1;filters={hardware_id,...(project_id?{project_id}:{})};return render(); }
+function openCheckout(allocation = null, hardware = null) {
+  const quantity = field('quantity','Quantity to check out',1,'number');
+  quantity.querySelector('input').min = '1';
+  if (allocation) quantity.querySelector('input').max = String(allocation.quantity-allocation.out);
+  const hardwareId = field('hardware_id','Hardware ID',allocation?.hardware_id || filters.hardware_id || '');
+  const projectId = field('project_id','External project ID',allocation?.project_id || filters.project_id || '');
+  if (allocation) {
+    hardwareId.querySelector('input').readOnly = true;
+    projectId.querySelector('input').readOnly = true;
+  }
+  openEditor('Check out hardware',allocation ? {hardware,allocation,available_to_check_out:allocation.quantity-allocation.out} : {instructions:'Reserve hardware in Project inventory first. Enter the hardware, project and borrower IDs from the owning services.'},
+    [hardwareId,projectId,field('user_id','Borrower ID'),quantity],async v=>{
+      await mutate('/api/checkouts','POST',{...v,quantity:Number(v.quantity)});
+      screen='checkouts';page=1;filters={hardware_id:v.hardware_id,project_id:v.project_id,outstanding:'true'};
+    });
+}
+function openCheckin(checkout) {
+  const quantity = field('quantity','Quantity to check in',checkout.quantity-checkout.returned,'number');
+  quantity.querySelector('input').min = '1';
+  quantity.querySelector('input').max = String(checkout.quantity-checkout.returned);
+  openEditor('Check in hardware (partial or full return)',checkout,[quantity],v=>mutate(`/api/checkouts/${checkout._id}/returns`,'POST',{...v,quantity:Number(v.quantity),expected_version:checkout.version}));
+}
 async function render() {
-  $('screen').replaceChildren(node('h2', {dashboard:'Inventory dashboard',hardware:'Hardware inventory',projects:'Project inventory',adjustments:'Inventory adjustments',checkouts:'Outstanding checkouts',transactions:'Immutable transaction history'}[screen]));
+  $('screen').replaceChildren(node('h2', {dashboard:'Inventory dashboard',hardware:'Hardware inventory',projects:'Project inventory',adjustments:'Inventory adjustments',checkouts:'Check-in and checkout management',transactions:'Immutable transaction history'}[screen]));
   if(screen==='dashboard') {
     const s=await api('/api/summary'), cards=node('div');cards.className='cards';
     const sum=k=>s.statuses.reduce((a,v)=>a+v[k],0), active=s.statuses.find(v=>v._id==='active');
@@ -102,13 +125,33 @@ async function render() {
     $('screen').append(choices);document.querySelector('[name=project_id]').setAttribute('list','project-ids');
     if(writable) $('screen').append(button('Set project allocation',()=>openEditor('Set allocation',{},[field('hardware_id','Hardware ID'),field('project_id','External project ID'),field('quantity','New allocated total',1,'number')],async v=>{const h=await api('/api/hardware/'+encodeURIComponent(v.hardware_id));if(!confirm(`Current total: ${h.total}; reserved: ${h.reserved}; checked out: ${h.out}. Confirm new allocation ${v.quantity}?`))throw new Error('Change cancelled');return mutate(`/api/hardware/${encodeURIComponent(v.hardware_id)}/allocations/${encodeURIComponent(v.project_id)}`,'PUT',{quantity:Number(v.quantity),reason:v.reason,expected_version:h.version});})));
     const data=await api('/api/allocations?'+qs());
-    table(['Project ID','Hardware ID','Allocated','Out','Actions'],data.items,a=>[a.project_id,a.hardware_id,a.quantity,a.out,actions(button('Audit',()=>auditFor(a.hardware_id,a.project_id)),...(writable?[button('Modify',async()=>{const h=await api('/api/hardware/'+encodeURIComponent(a.hardware_id));openEditor('Modify allocation',{allocation:a,hardware:h},[field('quantity','New allocated total',a.quantity,'number')],v=>mutate(`/api/hardware/${a.hardware_id}/allocations/${encodeURIComponent(a.project_id)}`,'PUT',{...v,quantity:Number(v.quantity),expected_version:h.version}));})]:[]))]);pager(data);return;
+    table(['Project ID','Hardware ID','Allocated','Out','Actions'],data.items,a=>{
+      const links=[button('Audit',()=>auditFor(a.hardware_id,a.project_id))];
+      if(writable) {
+        links.push(button('Modify',async()=>{const h=await api('/api/hardware/'+encodeURIComponent(a.hardware_id));openEditor('Modify allocation',{allocation:a,hardware:h},[field('quantity','New allocated total',a.quantity,'number')],v=>mutate(`/api/hardware/${a.hardware_id}/allocations/${encodeURIComponent(a.project_id)}`,'PUT',{...v,quantity:Number(v.quantity),expected_version:h.version}));}));
+        const checkout=button('Check out',async()=>{
+          const h=await api('/api/hardware/'+encodeURIComponent(a.hardware_id));
+          if(h.status!=='active') throw new Error('Only active hardware can be checked out.');
+          openCheckout(a,h);
+        });
+        checkout.disabled=a.quantity<=a.out;links.push(checkout);
+      }
+      return [a.project_id,a.hardware_id,a.quantity,a.out,actions(...links)];
+    });pager(data);return;
   }
   if(screen==='checkouts') {
     searchToolbar([['project_id','Project ID'],['hardware_id','Hardware ID'],['user_id','Borrower ID'],['outstanding','Show','select',['true','false']]]);
-    $('screen').append(node('p','Checkout creation belongs to the integrating service. Administrators can process returns and correct recorded return quantities here. Set Show=false to include fully returned checkouts.'));
+    $('screen').append(node('p','Check out reserved hardware to a borrower, or check in part or all of an outstanding checkout. Reserve stock in Project inventory before checking out. Set Show=false to include fully returned checkouts.'));
+    if(writable) $('screen').append(button('Check out hardware',()=>openCheckout()));
     const data=await api('/api/checkouts?'+qs());
-    table(['Checkout / hardware ID','Project / borrower ID','Quantity / returned','Actions'],data.items,c=>[c._id+' / '+c.hardware_id,c.project_id+' / '+c.user_id,`${c.quantity} / ${c.returned}`,actions(button('Audit',()=>auditFor(c.hardware_id,c.project_id)),...(writable?[button('Return',()=>openEditor('Process partial or full return',c,[field('quantity','Quantity to return',c.quantity-c.returned,'number')],v=>mutate(`/api/checkouts/${c._id}/returns`,'POST',{...v,quantity:Number(v.quantity),expected_version:c.version}))),button('Correct return',()=>openEditor('Correct cumulative returned quantity',c,[field('returned','Correct cumulative quantity returned',c.returned,'number')],v=>mutate(`/api/checkouts/${c._id}/corrections`,'POST',{...v,returned:Number(v.returned),expected_version:c.version,confirmed:true})))]:[]))]);pager(data);return;
+    table(['Checkout / hardware ID','Project / borrower ID','Quantity / returned','Outstanding','Actions'],data.items,c=>{
+      const links=[button('Audit',()=>auditFor(c.hardware_id,c.project_id))];
+      if(writable) {
+        const checkin=button('Check in',()=>openCheckin(c));checkin.disabled=c.returned>=c.quantity;links.push(checkin);
+        links.push(button('Correct return',()=>openEditor('Correct cumulative returned quantity',c,[field('returned','Correct cumulative quantity returned',c.returned,'number')],v=>mutate(`/api/checkouts/${c._id}/corrections`,'POST',{...v,returned:Number(v.returned),expected_version:c.version,confirmed:true}))));
+      }
+      return [c._id+' / '+c.hardware_id,c.project_id+' / '+c.user_id,`${c.quantity} / ${c.returned}`,c.quantity-c.returned,actions(...links)];
+    });pager(data);return;
   }
   searchToolbar([['project_id','Project ID'],['hardware_id','Hardware ID'],['actor_id','Administrator actor ID'],['user_id','Borrower ID'],['start','Start (ISO 8601 with timezone)'],['end','End (ISO 8601 with timezone)']]);
   const data=await api('/api/transactions?'+qs());
