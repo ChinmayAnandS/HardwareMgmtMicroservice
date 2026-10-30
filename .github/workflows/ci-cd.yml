@@ -1,9 +1,9 @@
 name: verify-build-deploy
 on:
   pull_request:
-    branches: [main, dev]
+    branches: []
   push:
-    branches: [main, dev]
+    branches: []
   workflow_dispatch:
 permissions:
   contents: read
