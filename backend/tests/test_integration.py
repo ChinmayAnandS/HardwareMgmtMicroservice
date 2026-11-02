@@ -18,10 +18,13 @@ from app.main import create_app
 from app.auth import digest
 
 
+SERVICE_KEY='integration-test-service-key-'+'x'*16
+
+
 @pytest.fixture
 def client():
     cfg=Settings(environment='test',database='hardware_test',origin='http://localhost:8080',
-                 dev_code=secrets.token_urlsafe(32))
+                 dev_code=secrets.token_urlsafe(32),service_api_key=SERVICE_KEY)
     assert cfg.database.endswith('_test')
     root_password=Path(os.environ['ROOT_PASSWORD_FILE']).read_text().strip()
     root=MongoClient('mongodb://mongo:27017/?replicaSet=rs0',username='root',password=root_password)
@@ -201,3 +204,52 @@ def test_origin_and_expired_session(client):
     client.root_db.sessions.update_one({'_id':digest(cookie)},
         {'$set':{'expires_at':datetime.now(timezone.utc)-timedelta(seconds=1)}})
     assert client.get('/api/hardware').status_code==401
+
+
+def service(client):
+    """A caller with no browser session: only the X-API-Key header."""
+    other=TestClient(client.app)
+    other.headers['X-API-Key']=SERVICE_KEY
+    return other
+
+
+def test_service_key_needs_no_login_and_request_number_is_applied_once(client):
+    h=hardware(client)
+    svc=service(client)
+    r=svc.put(f"/api/hardware/{h['_id']}/allocations/proj-1",json={'quantity':3,'reason':'Project request','request_id':'ALLOC-1001'})
+    assert r.status_code==200,r.text
+    again=svc.put(f"/api/hardware/{h['_id']}/allocations/proj-1",json={'quantity':3,'reason':'Project request','request_id':'ALLOC-1001'})
+    assert again.status_code==200 and again.json()==r.json()
+    body={'hardware_id':h['_id'],'project_id':'proj-1','user_id':'student-7','quantity':2,'reason':'Lab laptops','request_id':'REQ-1001'}
+    first=svc.post('/api/checkouts',json=body)
+    retry=svc.post('/api/checkouts',json=body)
+    assert first.status_code==retry.status_code==201,first.text
+    assert first.json()==retry.json()
+    assert client.root_db.checkouts.count_documents({})==1
+    assert client.get(f"/api/hardware/{h['_id']}").json()['out']==2
+    ret={'quantity':1,'reason':'One returned','request_id':'RET-1001'}
+    a=svc.post(f"/api/checkouts/{first.json()['_id']}/returns",json=ret)
+    b=svc.post(f"/api/checkouts/{first.json()['_id']}/returns",json=ret)
+    assert a.status_code==b.status_code==200,a.text
+    assert b.json()['returned']==1
+    assert client.get(f"/api/hardware/{h['_id']}").json()['out']==1
+    events=list(client.root_db.audit.find({'operation':{'$in':['checkout','return','allocate']}}))
+    assert len(events)==3 and {e['actor'] for e in events}=={'service:project-service'}
+
+
+def test_service_key_limits_and_request_number_validation(client):
+    h=hardware(client)
+    svc=service(client)
+    assert svc.get('/api/hardware').status_code==200
+    assert svc.get('/api/me').status_code==403
+    assert svc.post('/api/hardware',json={'name':'X','category':'Y','asset_tag':uuid4().hex,'total':1,'reason':'Not allowed'}).status_code==403
+    assert svc.post(f"/api/hardware/{h['_id']}/adjustments",json={'delta':1,'expected_version':1,'reason':'Not allowed','confirmed':True}).status_code==403
+    bad=TestClient(client.app); bad.headers['X-API-Key']='wrong'
+    assert bad.get('/api/hardware').status_code==401
+    assert TestClient(client.app).get('/api/hardware').status_code==401
+    body={'hardware_id':h['_id'],'project_id':'p','user_id':'u','quantity':1,'reason':'Missing number'}
+    assert svc.post('/api/checkouts',json=body).status_code==422
+    assert svc.post('/api/checkouts',json=dict(body,request_id='A-1'),headers={'Idempotency-Key':'B-2'}).status_code==422
+    svc.put(f"/api/hardware/{h['_id']}/allocations/p",json={'quantity':1,'reason':'Reserve one','request_id':'ALLOC-1'})
+    assert svc.post('/api/checkouts',json=dict(body,request_id='SAME-1')).status_code==201
+    assert svc.post('/api/checkouts',json=dict(body,request_id='SAME-1',quantity=2)).status_code==409

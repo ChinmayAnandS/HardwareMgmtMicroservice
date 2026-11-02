@@ -27,3 +27,10 @@ class ConfigurationTests(TestCase):
     def test_non_loopback_development_forbidden(self):
         with self.assertRaises(RuntimeError):
             Settings(environment='local',mongo_uri='mongodb://local',origin='http://public.invalid').check()
+
+    def test_short_service_key_rejected(self):
+        with self.assertRaises(RuntimeError):
+            self.valid(service_api_key='too-short').check()
+
+    def test_long_service_key_accepted(self):
+        self.valid(service_api_key='s'*40).check()

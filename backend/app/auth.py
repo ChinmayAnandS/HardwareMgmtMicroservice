@@ -1,4 +1,5 @@
 import hashlib
+import re
 import secrets
 from datetime import timedelta
 from fastapi import HTTPException, Request
@@ -10,7 +11,34 @@ def digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+# Writes a calling microservice may perform with an API key. Everything else that
+# changes inventory (create, edit, retire, adjust, correct) stays with signed-in admins.
+SERVICE_WRITES = (
+    ('POST', re.compile(r'^/api/checkouts$')),
+    ('POST', re.compile(r'^/api/checkouts/[^/]+/returns$')),
+    ('PUT', re.compile(r'^/api/hardware/[^/]+/allocations/[^/]+$')),
+)
+
+
+def service_actor(request: Request, presented: str):
+    cfg = request.app.state.settings
+    if not cfg.service_api_key or not secrets.compare_digest(presented.encode(), cfg.service_api_key.encode()):
+        raise HTTPException(401, 'Invalid API key')
+    path, method = request.url.path, request.method
+    if method in ('GET', 'HEAD'):
+        allowed = path.startswith('/api/') and path != '/api/me'
+    else:
+        allowed = any(m == method and pattern.match(path) for m, pattern in SERVICE_WRITES)
+    if not allowed:
+        raise HTTPException(403, 'Operation not permitted for service API keys')
+    # No cookie is involved, so CSRF and Origin checks do not apply to this caller.
+    return 'service:' + cfg.service_name
+
+
 def actor(request: Request):
+    presented = request.headers.get('x-api-key')
+    if presented is not None:
+        return service_actor(request, presented)
     user = request.session.get('user')
     if not user:
         raise HTTPException(401, 'Sign in required')

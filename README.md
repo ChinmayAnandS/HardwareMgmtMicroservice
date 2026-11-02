@@ -38,19 +38,9 @@ A pool supports up to 200 distinct project IDs, including historical zero alloca
 
 ## Local setup
 
-Prerequisites: Docker Engine/Desktop with Compose v2.24+, Python 3.12+, and the Linux ODBC build toolchain when installing Python dependencies directly on the host. On Ubuntu/Debian, install:
+Prerequisites: Docker Engine/Desktop with Compose v2.24+ and Python 3.12+. Run commands from this directory.
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y build-essential unixodbc-dev
-```
-
-Create a virtual environment before installing project dependencies, then run the stack from this directory:
-
-```bash
-python -m venv .venv
-. .venv/bin/activate
-pip install -r backend/requirements-dev.txt
 python scripts/local-secrets.py
 docker compose up -d --build --wait ui
 ```
@@ -76,12 +66,14 @@ Stop without deleting inventory: `docker compose down`. Permanently delete local
 2. Hardware: search a case-insensitive name or asset-tag prefix, filter status and sort. Create pools; edit metadata or status; retire only after all returns and reservation releases.
 3. Project inventory: select a known project ID from suggestions or enter its external ID. View hardware reservations and outstanding quantities. Set a reservation to zero to release it. Changes require the current hardware version and a reason. This screen cannot edit external project metadata.
 4. Stock adjustments: enter a signed delta and a reason. Current totals are shown, followed by an explicit confirmation. Negative stock is rejected by both business rules and database validation.
-5. Checkout management: use **Check out hardware** to enter hardware, external project and borrower IDs, quantity and a reason. Reserve stock in Project inventory first; its **Check out** action prefills the reservation and limits the quantity to remaining project capacity. Use **Check in** on an outstanding record for a partial or full return. Fully returned records disable check-in; set Show=false to include them. Administrators can also correct the **cumulative** returned quantity. Corrections can reopen a checkout only if active project capacity permits.
+5. Checkout management: filter outstanding records, process partial returns, or correct the **cumulative** returned quantity. Corrections can reopen a checkout only if active project capacity permits. No end-user checkout form exists in this UI.
 6. Transaction history: filter hardware, project, administrator actor, borrower and timezone-aware date ranges. Expand before/after snapshots. Hardware and allocation rows link to their history. Borrower filtering applies to checkout/return/correction events; audit actor refers to the administrator making a change.
 
 `Hardware.Admin` can mutate inventory. `Hardware.Auditor` is an administrative read-only role; controls disappear and API writes are denied. Both roles can sign out. All screens require authorization. Every mutating form requires a reason and confirmation. On HTTP 409 refresh the current screen before retrying. Network failures retain the same command key for a retry of the unchanged form.
 
 ## REST API
+
+Another microservice can call the API without signing in by sending `X-API-Key`; see [Service API](docs/SERVICE-API.md). Checkouts, returns and allocations accept a unique `request_id` (or `Idempotency-Key` header) so a retried request is applied only once.
 
 The checked-in [OpenAPI contract](openapi.json) documents all endpoints. After signing in, interactive Swagger UI is available at `/api/docs`; the authenticated `/api/openapi.json` endpoint emits the actual FastAPI schema. JSON uses `_id` for opaque IDs and `version` for optimistic concurrency. Hardware `available` and `unallocated` are derived by the single-item endpoint and UI.
 

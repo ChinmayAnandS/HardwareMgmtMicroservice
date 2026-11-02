@@ -7,6 +7,8 @@ Reason = Annotated[str, StringConstraints(strip_whitespace=True, min_length=3, m
 Status = Literal['active', 'damaged', 'under_maintenance', 'retired']
 Quantity = Annotated[int, Field(strict=True, ge=0, le=1000000)]
 Positive = Annotated[int, Field(strict=True, ge=1, le=1000000)]
+# A caller-chosen unique request number. Sending the same number again never repeats the operation.
+RequestId = Annotated[str, StringConstraints(pattern=r'^[A-Za-z0-9_.:-]{1,100}$')]
 
 
 class Model(BaseModel):
@@ -48,6 +50,9 @@ class Retire(Change):
 
 class Allocate(Change):
     quantity: Quantity
+    # Optional here: the request number already protects retries; send it to also detect stale edits.
+    expected_version: Positive | None = None
+    request_id: RequestId | None = None
 
 
 class Checkout(Model):
@@ -56,10 +61,13 @@ class Checkout(Model):
     user_id: Identifier
     quantity: Positive
     reason: Reason
+    request_id: RequestId | None = None
 
 
 class Return(Change):
     quantity: Positive
+    expected_version: Positive | None = None
+    request_id: RequestId | None = None
 
 
 class Correction(Change):

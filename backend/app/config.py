@@ -27,12 +27,19 @@ class Settings:
     azure_sql_driver: str = os.getenv('AZURE_SQL_DRIVER', 'ODBC Driver 18 for SQL Server')
     azure_sql_table: str = os.getenv('AZURE_SQL_TABLE', 'unified_procurement')
     sql_mock_data_file: str = os.getenv('SQL_MOCK_DATA_FILE', '')
+    # Optional machine-to-machine access for another microservice (X-API-Key header).
+    service_api_key: str = secret('SERVICE_API_KEY')
+    service_name: str = os.getenv('SERVICE_NAME', 'project-service')
 
     def check(self):
         if not self.mongo_uri:
             raise RuntimeError('MONGO_URI or MONGO_URI_FILE is required')
         if self.environment not in ('local', 'test', 'production'):
             raise RuntimeError('Invalid ENVIRONMENT')
+        if self.service_api_key and len(self.service_api_key) < 32:
+            raise RuntimeError('SERVICE_API_KEY must be at least 32 characters')
+        if not self.service_name.replace('-', '').replace('_', '').isalnum():
+            raise RuntimeError('SERVICE_NAME may contain only letters, digits, - and _')
         if self.environment == 'production':
             if not self.mongo_uri.startswith('mongodb+srv://') or any(x in self.mongo_uri.lower() for x in ('tls=false', 'tlsallowinvalid', 'ssl=false', 'tlsinsecure')):
                 raise RuntimeError('Production requires an Atlas SRV URI with verified TLS')

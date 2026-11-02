@@ -4,6 +4,7 @@ import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Annotated, Literal
+from pathlib import Path
 from urllib.parse import urlparse
 from authlib.integrations.starlette_client import OAuth
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
@@ -18,6 +19,7 @@ from .sql_store import AzureSqlStore
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s %(message)s')
 log = logging.getLogger('hardware')
+STATIC_DIR = Path(__file__).resolve().parent.parent / 'static'
 
 
 def create_app(settings=None):
@@ -60,6 +62,14 @@ def create_app(settings=None):
             response = JSONResponse({'detail': 'Storage temporarily unavailable'}, 503)
         response.headers.update({'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store',
                                  'Referrer-Policy': 'no-referrer'})
+        if STATIC_DIR.is_dir():
+            # Single-app hosting (no Nginx): apply the headers Nginx would otherwise add.
+            response.headers.update({
+                'X-Frame-Options': 'DENY',
+                'Strict-Transport-Security': 'max-age=31536000',
+                'Content-Security-Policy': "default-src 'none'; script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "
+                    "style-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; "
+                    "base-uri 'none'; frame-ancestors 'none'; form-action 'self'"})
         return response
 
     @app.get('/health', tags=['Operations'])
@@ -146,8 +156,22 @@ def create_app(settings=None):
 <script>window.onload=()=>SwaggerUIBundle({url:'/api/openapi.json',dom_id:'#swagger-ui',deepLinking:true,requestCredentials:'same-origin',persistAuthorization:false});</script>
 </body></html>''')
 
-    Key = Annotated[str, Header(alias='Idempotency-Key', min_length=16, max_length=100,
-                               pattern=r'^[A-Za-z0-9_-]+$')]
+    Key = Annotated[str, Header(alias='Idempotency-Key', min_length=1, max_length=100,
+                               pattern=r'^[A-Za-z0-9_.:-]+$')]
+    OptionalKey = Annotated[str | None, Header(alias='Idempotency-Key', min_length=1, max_length=100,
+                                               pattern=r'^[A-Za-z0-9_.:-]+$')]
+
+    def request_number(header, data):
+        """Use the Idempotency-Key header or the body's request_id (they must agree if both are sent)."""
+        body_id = getattr(data, 'request_id', None)
+        if header and body_id and header != body_id:
+            raise HTTPException(422, 'Idempotency-Key header and request_id differ')
+        if not (header or body_id):
+            raise HTTPException(422, 'Send a unique request_id in the body or an Idempotency-Key header')
+        return header or body_id
+
+    def payload(data):
+        return data.model_dump(exclude={'request_id'}, exclude_none=True)
     Entity = Annotated[str, Query(min_length=1, max_length=300)]
 
     def run(command, entity, data, key, user):
@@ -215,8 +239,8 @@ def create_app(settings=None):
         return run('adjust', hardware_id, data.model_dump(), key, user)
 
     @app.put('/api/hardware/{hardware_id}/allocations/{project_id}', tags=['Projects'])
-    def allocate(hardware_id: Identifier, project_id: Identifier, data: Allocate, key: Key, user=Depends(actor)):
-        return run('allocate', hardware_id, dict(data.model_dump(), project_id=project_id), key, user)
+    def allocate(hardware_id: Identifier, project_id: Identifier, data: Allocate, key: OptionalKey = None, user=Depends(actor)):
+        return run('allocate', hardware_id, dict(payload(data), project_id=project_id), request_number(key, data), user)
 
     @app.get('/api/allocations', tags=['Projects'])
     def allocations(project_id: Identifier | None = None, hardware_id: Identifier | None = None,
@@ -225,8 +249,8 @@ def create_app(settings=None):
         return listing('allocations', query, page, size)
 
     @app.post('/api/checkouts', tags=['Checkouts'], status_code=201)
-    def checkout(data: Checkout, key: Key, user=Depends(actor)):
-        return run('checkout', data.hardware_id, data.model_dump(), key, user)
+    def checkout(data: Checkout, key: OptionalKey = None, user=Depends(actor)):
+        return run('checkout', data.hardware_id, payload(data), request_number(key, data), user)
 
     @app.get('/api/checkouts', tags=['Checkouts'])
     def checkouts(project_id: Identifier | None = None, hardware_id: Identifier | None = None,
@@ -238,8 +262,8 @@ def create_app(settings=None):
         return listing('checkouts', query, page, size, [('created_at', -1), ('_id', -1)])
 
     @app.post('/api/checkouts/{checkout_id}/returns', tags=['Checkouts'])
-    def checkin(checkout_id: Identifier, data: Return, key: Key, user=Depends(actor)):
-        return run('return', checkout_id, data.model_dump(), key, user)
+    def checkin(checkout_id: Identifier, data: Return, key: OptionalKey = None, user=Depends(actor)):
+        return run('return', checkout_id, payload(data), request_number(key, data), user)
 
     @app.post('/api/checkouts/{checkout_id}/corrections', tags=['Checkouts'])
     def correct(checkout_id: Identifier, data: Correction, key: Key, user=Depends(actor)):
@@ -281,11 +305,21 @@ def create_app(settings=None):
         schema = original_openapi()
         schema.setdefault('components', {}).setdefault('securitySchemes', {})['Session'] = {
             'type': 'apiKey', 'in': 'cookie', 'name': '__Host-hardware'}
+        schema['components']['securitySchemes']['ServiceKey'] = {
+            'type': 'apiKey', 'in': 'header', 'name': 'X-API-Key',
+            'description': 'Microservice key: all GET /api/* plus checkout, return and allocation.'}
         for path, methods in schema['paths'].items():
             if path.startswith('/api/') or path == '/auth/logout':
                 for operation in methods.values():
                     if isinstance(operation, dict):
-                        operation['security'] = [{'Session': []}]
+                        operation['security'] = [{'Session': []}] if path in ('/api/me', '/auth/logout') \
+                            else [{'Session': []}, {'ServiceKey': []}]
         return schema
     app.openapi = with_security
+
+    # Single-app hosting (e.g. Azure App Service): serve the UI from ./static when it is
+    # bundled next to the API. Docker Compose has no static folder, so Nginx keeps serving it.
+    if STATIC_DIR.is_dir():
+        from fastapi.staticfiles import StaticFiles
+        app.mount('/', StaticFiles(directory=STATIC_DIR, html=True), name='ui')
     return app

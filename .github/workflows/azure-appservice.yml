@@ -1,0 +1,27 @@
+# Minimal deployment: one Azure App Service (Free F1, Python 3.12) runs the FastAPI API
+# and serves the plain-JavaScript UI from ./static. No Docker, registry, Key Vault or NAT.
+name: deploy-app-service
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bundle API and UI into one folder
+        run: |
+          mkdir -p dist/static
+          cp -r backend/app backend/requirements.txt dist/
+          cp ui/index.html ui/app.js ui/style.css dist/static/
+          ls -R dist | head -40
+      - name: Deploy to Azure App Service
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ vars.AZURE_WEBAPP_NAME }}
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          package: dist
