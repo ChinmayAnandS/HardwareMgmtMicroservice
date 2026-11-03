@@ -121,6 +121,12 @@ async function initialize() {
 $('cancel').onclick=()=>$('editor').close();
 $('signout').onclick=async()=>{try{await api('/auth/logout',{method:'POST'});location.assign('/');}catch(e){message(e.message);}};
 for(const b of document.querySelectorAll('[data-screen]'))b.onclick=()=>{screen=b.dataset.screen;page=1;filters={};render().catch(e=>message(e.message));};
-$('local-login').hidden=!new URLSearchParams(location.search).has('local');
+async function showSignIn(){
+  const m=await fetch('/auth/methods',{credentials:'same-origin'}).then(r=>r.json()).catch(()=>({}));
+  $('password-login').hidden=!m.password; $('sso-login').hidden=!m.sso;
+  $('local-login').hidden=!(m.local||new URLSearchParams(location.search).has('local'));
+}
+$('password-login').onsubmit=async e=>{e.preventDefault();const f=e.target.elements;const body={password:f.password.value};const name=f.name.value.trim();if(name)body.name=name;f.password.value='';try{await api('/auth/password',{method:'POST',body:JSON.stringify(body)});message('');await initialize();}catch(err){message(err.message);}};
 $('local-login').onsubmit=async e=>{e.preventDefault();const input=e.target.elements.code;const code=input.value;input.value='';try{await api('/auth/dev',{method:'POST',body:JSON.stringify({code})});history.replaceState({},'','/');await initialize();}catch(err){message(err.message);}};
+showSignIn();
 initialize().catch(e=>{if(e.status!==401)message(e.message);});

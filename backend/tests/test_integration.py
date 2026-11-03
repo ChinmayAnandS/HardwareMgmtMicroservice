@@ -19,12 +19,14 @@ from app.auth import digest
 
 
 SERVICE_KEY='integration-test-service-key-'+'x'*16
+ADMIN_PASSWORD='integration-admin-password'
 
 
 @pytest.fixture
 def client():
     cfg=Settings(environment='test',database='hardware_test',origin='http://localhost:8080',
-                 dev_code=secrets.token_urlsafe(32),service_api_key=SERVICE_KEY)
+                 dev_code=secrets.token_urlsafe(32),service_api_key=SERVICE_KEY,
+                 admin_password=ADMIN_PASSWORD)
     assert cfg.database.endswith('_test')
     root_password=Path(os.environ['ROOT_PASSWORD_FILE']).read_text().strip()
     root=MongoClient('mongodb://mongo:27017/?replicaSet=rs0',username='root',password=root_password)
@@ -253,3 +255,16 @@ def test_service_key_limits_and_request_number_validation(client):
     svc.put(f"/api/hardware/{h['_id']}/allocations/p",json={'quantity':1,'reason':'Reserve one','request_id':'ALLOC-1'})
     assert svc.post('/api/checkouts',json=dict(body,request_id='SAME-1')).status_code==201
     assert svc.post('/api/checkouts',json=dict(body,request_id='SAME-1',quantity=2)).status_code==409
+
+
+def test_admin_password_login(client):
+    browser=TestClient(client.app); browser.headers['Origin']='http://localhost:8080'
+    assert browser.get('/auth/methods').json()['password'] is True
+    assert browser.post('/auth/password',json={'password':'wrong-password'}).status_code==401
+    assert browser.get('/api/me').status_code==401
+    ok=browser.post('/auth/password',json={'password':ADMIN_PASSWORD,'name':'Nidhi'})
+    assert ok.status_code==200,ok.text
+    me=browser.get('/api/me').json()
+    assert me['name']=='Nidhi' and 'Hardware.Admin' in me['roles']
+    other=TestClient(client.app)
+    assert other.post('/auth/password',json={'password':ADMIN_PASSWORD}).status_code==403  # no Origin

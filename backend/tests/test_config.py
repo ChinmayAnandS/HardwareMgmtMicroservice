@@ -34,3 +34,17 @@ class ConfigurationTests(TestCase):
 
     def test_long_service_key_accepted(self):
         self.valid(service_api_key='s'*40).check()
+
+    def password_only(self, **overrides):
+        return self.valid(**dict({'issuer':'','client_id':'','client_secret':'','admin_password':'a-long-admin-password'},**overrides))
+
+    def test_admin_password_replaces_oidc(self):
+        self.password_only().check()
+
+    def test_short_admin_password_rejected(self):
+        with self.assertRaises(RuntimeError):
+            self.password_only(admin_password='short').check()
+
+    def test_production_needs_some_login(self):
+        with self.assertRaises(RuntimeError):
+            self.password_only(admin_password='').check()

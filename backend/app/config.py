@@ -15,6 +15,8 @@ class Settings:
     mongo_uri: str = secret('MONGO_URI')
     database: str = os.getenv('MONGO_DATABASE', 'hardware')
     origin: str = os.getenv('PUBLIC_ORIGIN', 'http://localhost:8080').rstrip('/')
+    # Simplest production login: one shared administrator password (instead of OIDC).
+    admin_password: str = secret('ADMIN_PASSWORD')
     issuer: str = os.getenv('OIDC_ISSUER', '')
     client_id: str = os.getenv('OIDC_CLIENT_ID', '')
     client_secret: str = secret('OIDC_CLIENT_SECRET')
@@ -43,9 +45,14 @@ class Settings:
         if self.environment == 'production':
             if not self.mongo_uri.startswith('mongodb+srv://') or any(x in self.mongo_uri.lower() for x in ('tls=false', 'tlsallowinvalid', 'ssl=false', 'tlsinsecure')):
                 raise RuntimeError('Production requires an Atlas SRV URI with verified TLS')
-            if not all((self.issuer, self.client_id, self.client_secret)):
-                raise RuntimeError('OIDC configuration is required')
-            if not self.origin.startswith('https://') or not self.issuer.startswith('https://'):
+            oidc = (self.issuer, self.client_id, self.client_secret)
+            if any(oidc) and not all(oidc):
+                raise RuntimeError('OIDC configuration is incomplete')
+            if not (self.admin_password or all(oidc)):
+                raise RuntimeError('Production requires ADMIN_PASSWORD or OIDC configuration')
+            if self.admin_password and len(self.admin_password) < 12:
+                raise RuntimeError('ADMIN_PASSWORD must be at least 12 characters')
+            if not self.origin.startswith('https://') or (self.issuer and not self.issuer.startswith('https://')):
                 raise RuntimeError('Production requires HTTPS origin and issuer')
             if self.dev_code:
                 raise RuntimeError('Development login is forbidden in production')

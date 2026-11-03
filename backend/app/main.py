@@ -13,7 +13,7 @@ from pymongo.errors import PyMongoError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .auth import actor, digest, install_sessions
 from .config import Settings
-from .models import Allocate, Adjust, Checkout, Correction, Create, Edit, Identifier, Login, Retire, Return
+from .models import Allocate, Adjust, Checkout, Correction, Create, Edit, Identifier, Login, PasswordLogin, Retire, Return
 from .store import Store, clean, now
 from .sql_store import AzureSqlStore
 
@@ -83,10 +83,16 @@ def create_app(settings=None):
             raise HTTPException(503, 'Transactional replica set required')
         return {'status': 'ready'}
 
+    @app.get('/auth/methods', tags=['Authentication'])
+    def methods():
+        """Which sign-in options the UI should show. Public; reveals no secrets."""
+        return {'password': bool(cfg.admin_password), 'sso': bool(cfg.issuer),
+                'local': cfg.environment != 'production' and bool(cfg.dev_code)}
+
     @app.get('/auth/login', tags=['Authentication'])
     async def login(request: Request):
         if not cfg.issuer:
-            return RedirectResponse('/?local=1', 303)
+            return RedirectResponse('/' if cfg.admin_password else '/?local=1', 303)
         return await oauth.entra.authorize_redirect(request, cfg.origin + '/auth/callback')
 
     @app.get('/auth/callback', tags=['Authentication'])
@@ -109,21 +115,52 @@ def create_app(settings=None):
             log.warning('OIDC callback rejected')
             raise HTTPException(401, 'Identity verification failed') from None
 
+    def client_ip(request: Request):
+        # On App Service the front end appends the real client to X-Forwarded-For ("ip:port").
+        # Use the right-most entry (added by Azure, not the browser) and drop the port.
+        forwarded = request.headers.get('x-forwarded-for', '')
+        if cfg.environment != 'production' or not forwarded:
+            return str(request.client.host)
+        last = forwarded.split(',')[-1].strip()
+        if last.startswith('['):
+            return last[1:last.find(']')]
+        return last.split(':')[0] if last.count(':') == 1 else last
+
+    def throttle(request: Request, name: str, attempts: int):
+        # Shared rate bucket across workers/replicas. No password or code is logged or stored here.
+        from datetime import timedelta
+        from pymongo import ReturnDocument
+        bucket = digest(name + ':' + client_ip(request) + ':' + str(int(now().timestamp()) // 300))
+        limit = store.db.limits.find_one_and_update({'_id': bucket},
+                  {'$inc': {'attempts': 1}, '$setOnInsert': {'expires_at': now() + timedelta(minutes=10)}},
+                  upsert=True, return_document=ReturnDocument.AFTER)
+        if limit['attempts'] > attempts:
+            raise HTTPException(429, 'Too many attempts. Try again in five minutes')
+
+    @app.post('/auth/password', tags=['Authentication'])
+    def password_login(data: PasswordLogin, request: Request):
+        if not cfg.admin_password:
+            raise HTTPException(404)
+        if request.headers.get('origin') != cfg.origin:
+            raise HTTPException(403, 'Invalid origin')
+        throttle(request, 'password', 10)
+        if not secrets.compare_digest(data.password.encode(), cfg.admin_password.encode()):
+            log.warning('Admin password login failed')
+            raise HTTPException(401, 'Wrong password')
+        name = (data.name or '').strip() or 'Administrator'
+        request.session.clear()
+        request.session.update(user={'sub': 'password:' + name.lower().replace(' ', '-'), 'name': name,
+                                     'roles': ['Hardware.Admin']}, csrf=secrets.token_urlsafe(32))
+        request.scope['rotate_session'] = True
+        return {'status': 'signed_in'}
+
     @app.post('/auth/dev', tags=['Authentication'])
     def dev_login(data: Login, request: Request):
         if cfg.environment == 'production' or not cfg.dev_code:
             raise HTTPException(404)
         if request.headers.get('origin') != cfg.origin:
             raise HTTPException(403, 'Invalid origin')
-        # Shared rate bucket across workers/replicas. No code is logged or stored here.
-        bucket = digest(str(request.client.host) + ':' + str(int(now().timestamp()) // 300))
-        from datetime import timedelta
-        from pymongo import ReturnDocument
-        limit = store.db.limits.find_one_and_update({'_id': bucket},
-                  {'$inc': {'attempts': 1}, '$setOnInsert': {'expires_at': now() + timedelta(minutes=10)}},
-                  upsert=True, return_document=ReturnDocument.AFTER)
-        if limit['attempts'] > 5:
-            raise HTTPException(429, 'Try again in five minutes')
+        throttle(request, 'dev', 5)
         if not secrets.compare_digest(data.code, cfg.dev_code):
             raise HTTPException(401, 'Invalid development code')
         request.session.clear()
