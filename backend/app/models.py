@@ -81,5 +81,5 @@ class Login(Model):
 
 class PasswordLogin(Model):
     password: Annotated[str, Field(min_length=1, max_length=200)]
-    # Optional, self-declared name recorded in the audit log (the password itself is shared).
-    name: Annotated[str, StringConstraints(pattern=r'^[A-Za-z0-9 ._-]{1,40}$')] | None = None
+    # Team name, e.g. hardware-admin (see app/teams.py).
+    name: Annotated[str, StringConstraints(pattern=r'^[A-Za-z0-9._-]{1,40}$')]

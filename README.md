@@ -73,7 +73,7 @@ Stop without deleting inventory: `docker compose down`. Permanently delete local
 
 ## REST API
 
-Another microservice can call the API without signing in by sending `X-API-Key`; see [Service API](docs/SERVICE-API.md). Checkouts, returns and allocations accept a unique `request_id` (or `Idempotency-Key` header) so a retried request is applied only once.
+Other teams call the API with their team name and code (HTTP Basic auth); see [Team access](docs/SERVICE-API.md). Checkouts, returns and allocations accept a unique `request_id` (or `Idempotency-Key` header) so a retried request is applied only once.
 
 The checked-in [OpenAPI contract](openapi.json) documents all endpoints. After signing in, interactive Swagger UI is available at `/api/docs`; the authenticated `/api/openapi.json` endpoint emits the actual FastAPI schema. JSON uses `_id` for opaque IDs and `version` for optimistic concurrency. Hardware `available` and `unallocated` are derived by the single-item endpoint and UI.
 

@@ -18,15 +18,13 @@ from app.main import create_app
 from app.auth import digest
 
 
-SERVICE_KEY='integration-test-service-key-'+'x'*16
-ADMIN_PASSWORD='integration-admin-password'
+CODES={'hardware-admin':'admin-code-'+'a'*16,'projects-team':'projects-code-'+'p'*16,'front-end':'frontend-code-'+'f'*16}
 
 
 @pytest.fixture
 def client():
     cfg=Settings(environment='test',database='hardware_test',origin='http://localhost:8080',
-                 dev_code=secrets.token_urlsafe(32),service_api_key=SERVICE_KEY,
-                 admin_password=ADMIN_PASSWORD)
+                 dev_code=secrets.token_urlsafe(32),team_codes=dict(CODES))
     assert cfg.database.endswith('_test')
     root_password=Path(os.environ['ROOT_PASSWORD_FILE']).read_text().strip()
     root=MongoClient('mongodb://mongo:27017/?replicaSet=rs0',username='root',password=root_password)
@@ -208,16 +206,16 @@ def test_origin_and_expired_session(client):
     assert client.get('/api/hardware').status_code==401
 
 
-def service(client):
-    """A caller with no browser session: only the X-API-Key header."""
+def team(client,name,code=None):
+    """A caller with no browser session: only HTTP Basic team credentials."""
     other=TestClient(client.app)
-    other.headers['X-API-Key']=SERVICE_KEY
+    other.auth=(name,code or CODES[name])
     return other
 
 
-def test_service_key_needs_no_login_and_request_number_is_applied_once(client):
+def test_projects_team_needs_no_login_and_request_number_is_applied_once(client):
     h=hardware(client)
-    svc=service(client)
+    svc=team(client,'projects-team')
     r=svc.put(f"/api/hardware/{h['_id']}/allocations/proj-1",json={'quantity':3,'reason':'Project request','request_id':'ALLOC-1001'})
     assert r.status_code==200,r.text
     again=svc.put(f"/api/hardware/{h['_id']}/allocations/proj-1",json={'quantity':3,'reason':'Project request','request_id':'ALLOC-1001'})
@@ -236,35 +234,40 @@ def test_service_key_needs_no_login_and_request_number_is_applied_once(client):
     assert b.json()['returned']==1
     assert client.get(f"/api/hardware/{h['_id']}").json()['out']==1
     events=list(client.root_db.audit.find({'operation':{'$in':['checkout','return','allocate']}}))
-    assert len(events)==3 and {e['actor'] for e in events}=={'service:project-service'}
+    assert len(events)==3 and {e['actor'] for e in events}=={'team:projects-team'}
 
 
-def test_service_key_limits_and_request_number_validation(client):
+def test_team_permissions_and_request_number_validation(client):
     h=hardware(client)
-    svc=service(client)
-    assert svc.get('/api/hardware').status_code==200
-    assert svc.get('/api/me').status_code==403
-    assert svc.post('/api/hardware',json={'name':'X','category':'Y','asset_tag':uuid4().hex,'total':1,'reason':'Not allowed'}).status_code==403
-    assert svc.post(f"/api/hardware/{h['_id']}/adjustments",json={'delta':1,'expected_version':1,'reason':'Not allowed','confirmed':True}).status_code==403
-    bad=TestClient(client.app); bad.headers['X-API-Key']='wrong'
-    assert bad.get('/api/hardware').status_code==401
+    projects=team(client,'projects-team')
+    front=team(client,'front-end')
+    admin=team(client,'hardware-admin')
+    assert projects.get('/api/hardware').status_code==200
+    assert front.get('/api/hardware').status_code==200
+    assert projects.get('/api/me').status_code==403
+    assert projects.post('/api/hardware',json={'name':'X','category':'Y','asset_tag':uuid4().hex,'total':1,'reason':'Not allowed'}).status_code==403
+    assert front.put(f"/api/hardware/{h['_id']}/allocations/p",json={'quantity':1,'reason':'Not allowed','request_id':'X-1'}).status_code==403
+    created=admin.post('/api/hardware',json={'name':'Y','category':'Y','asset_tag':uuid4().hex,'total':1,'reason':'Admin via API'},headers={'Idempotency-Key':'ADMIN-1'})
+    assert created.status_code==201,created.text
+    assert team(client,'projects-team',CODES['front-end']).get('/api/hardware').status_code==401
+    assert team(client,'nobody','x'*24).get('/api/hardware').status_code==401
     assert TestClient(client.app).get('/api/hardware').status_code==401
+    projects.put(f"/api/hardware/{h['_id']}/allocations/p",json={'quantity':1,'reason':'Reserve one','request_id':'ALLOC-1'})
     body={'hardware_id':h['_id'],'project_id':'p','user_id':'u','quantity':1,'reason':'Missing number'}
-    assert svc.post('/api/checkouts',json=body).status_code==422
-    assert svc.post('/api/checkouts',json=dict(body,request_id='A-1'),headers={'Idempotency-Key':'B-2'}).status_code==422
-    svc.put(f"/api/hardware/{h['_id']}/allocations/p",json={'quantity':1,'reason':'Reserve one','request_id':'ALLOC-1'})
-    assert svc.post('/api/checkouts',json=dict(body,request_id='SAME-1')).status_code==201
-    assert svc.post('/api/checkouts',json=dict(body,request_id='SAME-1',quantity=2)).status_code==409
+    assert front.post('/api/checkouts',json=body).status_code==422
+    assert front.post('/api/checkouts',json=dict(body,request_id='A-1'),headers={'Idempotency-Key':'B-2'}).status_code==422
+    assert front.post('/api/checkouts',json=dict(body,request_id='SAME-1')).status_code==201
+    assert front.post('/api/checkouts',json=dict(body,request_id='SAME-1',quantity=2)).status_code==409
 
 
-def test_admin_password_login(client):
+def test_website_sign_in_only_for_ui_teams(client):
     browser=TestClient(client.app); browser.headers['Origin']='http://localhost:8080'
     assert browser.get('/auth/methods').json()['password'] is True
-    assert browser.post('/auth/password',json={'password':'wrong-password'}).status_code==401
+    assert browser.post('/auth/password',json={'name':'hardware-admin','password':'wrong-code-wrong-code'}).status_code==401
+    assert browser.post('/auth/password',json={'name':'projects-team','password':CODES['projects-team']}).status_code==401
     assert browser.get('/api/me').status_code==401
-    ok=browser.post('/auth/password',json={'password':ADMIN_PASSWORD,'name':'Nidhi'})
+    ok=browser.post('/auth/password',json={'name':'hardware-admin','password':CODES['hardware-admin']})
     assert ok.status_code==200,ok.text
     me=browser.get('/api/me').json()
-    assert me['name']=='Nidhi' and 'Hardware.Admin' in me['roles']
-    other=TestClient(client.app)
-    assert other.post('/auth/password',json={'password':ADMIN_PASSWORD}).status_code==403  # no Origin
+    assert me['name']=='hardware-admin' and 'Hardware.Admin' in me['roles']
+    assert TestClient(client.app).post('/auth/password',json={'name':'hardware-admin','password':CODES['hardware-admin']}).status_code==403

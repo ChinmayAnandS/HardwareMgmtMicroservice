@@ -1,44 +1,68 @@
+import base64
+import binascii
 import hashlib
-import re
 import secrets
 from datetime import timedelta
 from fastapi import HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 from .store import now
+from .teams import allowed
 
 
 def digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-# Writes a calling microservice may perform with an API key. Everything else that
-# changes inventory (create, edit, retire, adjust, correct) stays with signed-in admins.
-SERVICE_WRITES = (
-    ('POST', re.compile(r'^/api/checkouts$')),
-    ('POST', re.compile(r'^/api/checkouts/[^/]+/returns$')),
-    ('PUT', re.compile(r'^/api/hardware/[^/]+/allocations/[^/]+$')),
-)
+def client_ip(request: Request):
+    # Behind Azure the front end appends the real client to X-Forwarded-For (sometimes "ip:port").
+    # Use the right-most entry (added by Azure, not the browser) and drop any port.
+    forwarded = request.headers.get('x-forwarded-for', '')
+    if request.app.state.settings.environment != 'production' or not forwarded:
+        return str(request.client.host)
+    last = forwarded.split(',')[-1].strip()
+    if last.startswith('['):
+        return last[1:last.find(']')]
+    return last.split(':')[0] if last.count(':') == 1 else last
 
 
-def service_actor(request: Request, presented: str):
+def check_team_code(cfg, name: str, code: str) -> bool:
+    expected = cfg.team_codes.get(name, '')
+    # Always compare (even for unknown names) so timing does not reveal which team names exist.
+    ok = secrets.compare_digest(code.encode(), (expected or '\0' * 24).encode())
+    return bool(expected) and ok
+
+
+def count_failure(request: Request, kind: str, limit: int):
+    """Count a failed sign-in for this client; refuse after `limit` failures in five minutes."""
+    from pymongo import ReturnDocument
+    window = int(now().timestamp()) // 300
+    bucket = digest(f'{kind}:{client_ip(request)}:{window}')
+    doc = request.app.state.store.db.limits.find_one_and_update(
+        {'_id': bucket}, {'$inc': {'attempts': 1}, '$setOnInsert': {'expires_at': now() + timedelta(minutes=10)}},
+        upsert=True, return_document=ReturnDocument.AFTER)
+    if doc['attempts'] > limit:
+        raise HTTPException(429, 'Too many failed attempts. Try again in five minutes')
+
+
+def team_actor(request: Request, header: str):
+    """HTTP Basic auth: username = team name, password = team code. No cookie, so no CSRF."""
     cfg = request.app.state.settings
-    if not cfg.service_api_key or not secrets.compare_digest(presented.encode(), cfg.service_api_key.encode()):
-        raise HTTPException(401, 'Invalid API key')
-    path, method = request.url.path, request.method
-    if method in ('GET', 'HEAD'):
-        allowed = path.startswith('/api/') and path != '/api/me'
-    else:
-        allowed = any(m == method and pattern.match(path) for m, pattern in SERVICE_WRITES)
-    if not allowed:
-        raise HTTPException(403, 'Operation not permitted for service API keys')
-    # No cookie is involved, so CSRF and Origin checks do not apply to this caller.
-    return 'service:' + cfg.service_name
+    try:
+        name, _, code = base64.b64decode(header[6:].strip(), validate=True).decode().partition(':')
+    except (binascii.Error, UnicodeDecodeError):
+        name, code = '', ''
+    if not check_team_code(cfg, name, code):
+        count_failure(request, 'basic', 20)
+        raise HTTPException(401, 'Invalid team name or code')
+    if not allowed(name, request.method, request.url.path):
+        raise HTTPException(403, f'Team {name} is not allowed to call this endpoint')
+    return 'team:' + name
 
 
 def actor(request: Request):
-    presented = request.headers.get('x-api-key')
-    if presented is not None:
-        return service_actor(request, presented)
+    authorization = request.headers.get('authorization', '')
+    if authorization[:6].lower() == 'basic ':
+        return team_actor(request, authorization)
     user = request.session.get('user')
     if not user:
         raise HTTPException(401, 'Sign in required')

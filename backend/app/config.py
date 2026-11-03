@@ -1,7 +1,8 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
+from .teams import TEAMS
 
 
 def secret(name):
@@ -15,8 +16,9 @@ class Settings:
     mongo_uri: str = secret('MONGO_URI')
     database: str = os.getenv('MONGO_DATABASE', 'hardware')
     origin: str = os.getenv('PUBLIC_ORIGIN', 'http://localhost:8080').rstrip('/')
-    # Simplest production login: one shared administrator password (instead of OIDC).
-    admin_password: str = secret('ADMIN_PASSWORD')
+    # Team name -> code, for every team in teams.py whose TEAM_CODE_* variable is set.
+    team_codes: dict = field(default_factory=lambda: {
+        name: secret(team['env']) for name, team in TEAMS.items() if secret(team['env'])})
     issuer: str = os.getenv('OIDC_ISSUER', '')
     client_id: str = os.getenv('OIDC_CLIENT_ID', '')
     client_secret: str = secret('OIDC_CLIENT_SECRET')
@@ -29,32 +31,31 @@ class Settings:
     azure_sql_driver: str = os.getenv('AZURE_SQL_DRIVER', 'ODBC Driver 18 for SQL Server')
     azure_sql_table: str = os.getenv('AZURE_SQL_TABLE', 'unified_procurement')
     sql_mock_data_file: str = os.getenv('SQL_MOCK_DATA_FILE', '')
-    # Optional machine-to-machine access for another microservice (X-API-Key header).
-    service_api_key: str = secret('SERVICE_API_KEY')
-    service_name: str = os.getenv('SERVICE_NAME', 'project-service')
 
     def check(self):
         if not self.mongo_uri:
             raise RuntimeError('MONGO_URI or MONGO_URI_FILE is required')
         if self.environment not in ('local', 'test', 'production'):
             raise RuntimeError('Invalid ENVIRONMENT')
-        if self.service_api_key and len(self.service_api_key) < 32:
-            raise RuntimeError('SERVICE_API_KEY must be at least 32 characters')
-        if not self.service_name.replace('-', '').replace('_', '').isalnum():
-            raise RuntimeError('SERVICE_NAME may contain only letters, digits, - and _')
+        for name, code in self.team_codes.items():
+            if name not in TEAMS:
+                raise RuntimeError(f'Unknown team {name}')
+            if len(code) < 16:
+                raise RuntimeError(f'Code for team {name} must be at least 16 characters')
         if self.environment == 'production':
             if not self.mongo_uri.startswith('mongodb+srv://') or any(x in self.mongo_uri.lower() for x in ('tls=false', 'tlsallowinvalid', 'ssl=false', 'tlsinsecure')):
                 raise RuntimeError('Production requires an Atlas SRV URI with verified TLS')
             oidc = (self.issuer, self.client_id, self.client_secret)
             if any(oidc) and not all(oidc):
                 raise RuntimeError('OIDC configuration is incomplete')
-            if not (self.admin_password or all(oidc)):
-                raise RuntimeError('Production requires ADMIN_PASSWORD or OIDC configuration')
-            if self.admin_password and len(self.admin_password) < 12:
-                raise RuntimeError('ADMIN_PASSWORD must be at least 12 characters')
+            if not (self.ui_teams() or all(oidc)):
+                raise RuntimeError('Production requires TEAM_CODE_HARDWARE_ADMIN (or OIDC configuration)')
             if not self.origin.startswith('https://') or (self.issuer and not self.issuer.startswith('https://')):
                 raise RuntimeError('Production requires HTTPS origin and issuer')
             if self.dev_code:
                 raise RuntimeError('Development login is forbidden in production')
         elif urlparse(self.origin).hostname not in ('localhost', '127.0.0.1'):
             raise RuntimeError('Local/test origin must be loopback')
+
+    def ui_teams(self):
+        return [name for name in self.team_codes if TEAMS[name]['ui']]

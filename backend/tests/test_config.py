@@ -28,23 +28,21 @@ class ConfigurationTests(TestCase):
         with self.assertRaises(RuntimeError):
             Settings(environment='local',mongo_uri='mongodb://local',origin='http://public.invalid').check()
 
-    def test_short_service_key_rejected(self):
+    def team_only(self, **overrides):
+        return self.valid(**dict({'issuer':'','client_id':'','client_secret':'',
+                                  'team_codes':{'hardware-admin':'a'*24}},**overrides))
+
+    def test_team_code_replaces_oidc(self):
+        self.team_only().check()
+
+    def test_short_team_code_rejected(self):
         with self.assertRaises(RuntimeError):
-            self.valid(service_api_key='too-short').check()
+            self.team_only(team_codes={'hardware-admin':'short'}).check()
 
-    def test_long_service_key_accepted(self):
-        self.valid(service_api_key='s'*40).check()
-
-    def password_only(self, **overrides):
-        return self.valid(**dict({'issuer':'','client_id':'','client_secret':'','admin_password':'a-long-admin-password'},**overrides))
-
-    def test_admin_password_replaces_oidc(self):
-        self.password_only().check()
-
-    def test_short_admin_password_rejected(self):
+    def test_production_needs_a_ui_team(self):
         with self.assertRaises(RuntimeError):
-            self.password_only(admin_password='short').check()
+            self.team_only(team_codes={'projects-team':'p'*24}).check()
 
-    def test_production_needs_some_login(self):
+    def test_unknown_team_rejected(self):
         with self.assertRaises(RuntimeError):
-            self.password_only(admin_password='').check()
+            self.team_only(team_codes={'hardware-admin':'a'*24,'mystery':'m'*24}).check()

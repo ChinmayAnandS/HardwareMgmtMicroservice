@@ -11,7 +11,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse, JSONResponse, HTMLResponse
 from pymongo.errors import PyMongoError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-from .auth import actor, digest, install_sessions
+from .auth import actor, check_team_code, client_ip, digest, install_sessions
 from .config import Settings
 from .models import Allocate, Adjust, Checkout, Correction, Create, Edit, Identifier, Login, PasswordLogin, Retire, Return
 from .store import Store, clean, now
@@ -86,13 +86,13 @@ def create_app(settings=None):
     @app.get('/auth/methods', tags=['Authentication'])
     def methods():
         """Which sign-in options the UI should show. Public; reveals no secrets."""
-        return {'password': bool(cfg.admin_password), 'sso': bool(cfg.issuer),
+        return {'password': bool(cfg.ui_teams()), 'sso': bool(cfg.issuer),
                 'local': cfg.environment != 'production' and bool(cfg.dev_code)}
 
     @app.get('/auth/login', tags=['Authentication'])
     async def login(request: Request):
         if not cfg.issuer:
-            return RedirectResponse('/' if cfg.admin_password else '/?local=1', 303)
+            return RedirectResponse('/' if cfg.ui_teams() else '/?local=1', 303)
         return await oauth.entra.authorize_redirect(request, cfg.origin + '/auth/callback')
 
     @app.get('/auth/callback', tags=['Authentication'])
@@ -115,17 +115,6 @@ def create_app(settings=None):
             log.warning('OIDC callback rejected')
             raise HTTPException(401, 'Identity verification failed') from None
 
-    def client_ip(request: Request):
-        # On App Service the front end appends the real client to X-Forwarded-For ("ip:port").
-        # Use the right-most entry (added by Azure, not the browser) and drop the port.
-        forwarded = request.headers.get('x-forwarded-for', '')
-        if cfg.environment != 'production' or not forwarded:
-            return str(request.client.host)
-        last = forwarded.split(',')[-1].strip()
-        if last.startswith('['):
-            return last[1:last.find(']')]
-        return last.split(':')[0] if last.count(':') == 1 else last
-
     def throttle(request: Request, name: str, attempts: int):
         # Shared rate bucket across workers/replicas. No password or code is logged or stored here.
         from datetime import timedelta
@@ -139,18 +128,19 @@ def create_app(settings=None):
 
     @app.post('/auth/password', tags=['Authentication'])
     def password_login(data: PasswordLogin, request: Request):
-        if not cfg.admin_password:
+        """Website sign-in with a team name and that team's code (only teams with ui=True)."""
+        if not cfg.ui_teams():
             raise HTTPException(404)
         if request.headers.get('origin') != cfg.origin:
             raise HTTPException(403, 'Invalid origin')
         throttle(request, 'password', 10)
-        if not secrets.compare_digest(data.password.encode(), cfg.admin_password.encode()):
-            log.warning('Admin password login failed')
-            raise HTTPException(401, 'Wrong password')
-        name = (data.name or '').strip() or 'Administrator'
+        name = data.name.strip().lower()
+        if not check_team_code(cfg, name, data.password) or name not in cfg.ui_teams():
+            log.warning('Team sign-in failed')
+            raise HTTPException(401, 'Wrong team name or code')
         request.session.clear()
-        request.session.update(user={'sub': 'password:' + name.lower().replace(' ', '-'), 'name': name,
-                                     'roles': ['Hardware.Admin']}, csrf=secrets.token_urlsafe(32))
+        request.session.update(user={'sub': 'team:' + name, 'name': name, 'roles': ['Hardware.Admin']},
+                               csrf=secrets.token_urlsafe(32))
         request.scope['rotate_session'] = True
         return {'status': 'signed_in'}
 
@@ -342,15 +332,15 @@ def create_app(settings=None):
         schema = original_openapi()
         schema.setdefault('components', {}).setdefault('securitySchemes', {})['Session'] = {
             'type': 'apiKey', 'in': 'cookie', 'name': '__Host-hardware'}
-        schema['components']['securitySchemes']['ServiceKey'] = {
-            'type': 'apiKey', 'in': 'header', 'name': 'X-API-Key',
-            'description': 'Microservice key: all GET /api/* plus checkout, return and allocation.'}
+        schema['components']['securitySchemes']['Team'] = {
+            'type': 'http', 'scheme': 'basic',
+            'description': 'Username = team name, password = team code. Permissions per team are in app/teams.py.'}
         for path, methods in schema['paths'].items():
             if path.startswith('/api/') or path == '/auth/logout':
                 for operation in methods.values():
                     if isinstance(operation, dict):
                         operation['security'] = [{'Session': []}] if path in ('/api/me', '/auth/logout') \
-                            else [{'Session': []}, {'ServiceKey': []}]
+                            else [{'Session': []}, {'Team': []}]
         return schema
     app.openapi = with_security
 
