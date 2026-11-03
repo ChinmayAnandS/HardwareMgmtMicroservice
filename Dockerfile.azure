@@ -1,0 +1,26 @@
+# Single image for Azure Container Apps: FastAPI API + the static UI, one container, one URL.
+# Built from the repository root:  docker build -f Dockerfile.azure -t hardware .
+FROM python:3.12-slim-bookworm
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+WORKDIR /app
+
+# Microsoft ODBC Driver 18 (needed for the Azure SQL vendor lookup; pyodbc alone is not enough).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl gnupg ca-certificates \
+ && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
+ && echo "deb [arch=amd64,arm64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/debian/12/prod bookworm main" \
+      > /etc/apt/sources.list.d/mssql-release.list \
+ && apt-get update \
+ && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 unixodbc \
+ && apt-get purge -y curl gnupg && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt && useradd --uid 10001 --create-home service
+
+COPY --chown=10001:10001 backend/app app
+# The API serves these files itself when /app/static exists (no Nginx needed).
+COPY --chown=10001:10001 ui/index.html ui/app.js ui/style.css static/
+
+USER 10001
+EXPOSE 8000
+CMD ["uvicorn", "app.asgi:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log", "--no-proxy-headers"]

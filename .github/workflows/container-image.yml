@@ -1,0 +1,43 @@
+# Builds the single Container Apps image on every push to dev and publishes it to
+# GitHub Container Registry (free). No Azure credentials are stored in GitHub.
+name: container-image
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Image name (lowercase)
+        id: name
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.azure
+          push: true
+          tags: |
+            ${{ steps.name.outputs.image }}:latest
+            ${{ steps.name.outputs.image }}:${{ github.sha }}
+      - name: How to deploy this build
+        run: |
+          {
+            echo "### Image published"
+            echo '`${{ steps.name.outputs.image }}:${{ github.sha }}`'
+            echo
+            echo "Deploy it (replace the app and resource group names):"
+            echo '```'
+            echo "az containerapp update --name hardware-app --resource-group hardware-rg --image ${{ steps.name.outputs.image }}:${{ github.sha }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
