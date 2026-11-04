@@ -17,7 +17,7 @@ TEAMS = {
     'hardware-admin': {'env': 'TEAM_CODE_HARDWARE_ADMIN', 'ui': True, 'api': 'all'},
     'projects-team': {'env': 'TEAM_CODE_PROJECTS_TEAM', 'ui': False, 'api': ('read', 'allocate', 'checkout', 'return')},
     'front-end': {'env': 'TEAM_CODE_FRONT_END', 'ui': False, 'api': ('read', 'allocate', 'checkout', 'return')},
-    'users-team': {'env': 'TEAM_CODE_USERS_TEAM', 'ui': False, 'api': ('read')}
+    'users-team': {'env': 'TEAM_CODE_USERS_TEAM', 'ui': False, 'api': ('read',)}
 }
 
 # Operation name -> (HTTP method, path pattern) pairs it covers.

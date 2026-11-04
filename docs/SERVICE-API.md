@@ -6,7 +6,8 @@ Every caller identifies itself with a **team name** and that team's **code**. Th
 |---|---|---|
 | `hardware-admin` | Yes, full administrator | Everything |
 | `projects-team` | No | Read everything, allocate, check out, check in |
-| `front-end` | No | Read everything, check out, check in |
+| `front-end` | No | Read everything, allocate, check out, check in |
+| `users-team` | No | Read everything (read-only) |
 
 Permissions are defined in `backend/app/teams.py`. To add a team or change what a team may do, edit that file and redeploy.
 
@@ -25,6 +26,7 @@ Add them to the app as environment variables (in Container Apps, store each as a
 | `TEAM_CODE_HARDWARE_ADMIN` | hardware-admin (required) |
 | `TEAM_CODE_PROJECTS_TEAM` | projects-team |
 | `TEAM_CODE_FRONT_END` | front-end |
+| `TEAM_CODE_USERS_TEAM` | users-team |
 
 A team whose variable is empty cannot sign in. Codes must be at least 16 characters. To revoke or rotate a team's access, change or delete its variable.
 
