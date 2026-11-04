@@ -88,6 +88,8 @@ curl -u projects-team:THE-CODE -X POST "https://YOUR-APP-URL/api/checkouts/$CHEC
   -d '{"quantity":1,"reason":"Returned after lab","request_id":"REQ-1001-return-1"}'
 ```
 
+For what each response contains (including what `out`, `reserved` and `available` mean), see [API-RESPONSES.md](API-RESPONSES.md).
+
 ## Errors
 
 | Status | Meaning |
