@@ -3,5 +3,6 @@ WORKDIR /repo
 COPY backend/requirements*.txt backend/
 RUN pip install --no-cache-dir -r backend/requirements-dev.txt
 COPY . .
+RUN python scripts/generate-proto.py
 ENV PYTHONPATH=/repo/backend
 ENTRYPOINT ["python", "scripts/run-tests.py"]

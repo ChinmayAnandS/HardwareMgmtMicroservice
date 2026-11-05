@@ -1,5 +1,7 @@
 # Verification record
 
+> **Historical.** This document describes the earlier REST/FastAPI version. The service now speaks gRPC; see the README ("gRPC API" and "Verification") and `docs/SERVICE-API.md` for the current contract.
+
 Generated 24 October 2026.
 
 | Check | Result |

@@ -1,0 +1,422 @@
+// Hardware management service contract (gRPC).
+//
+// Conventions
+//  * Every mutating RPC takes a caller-chosen unique `request_id` (or the `idempotency-key` metadata
+//    entry; if both are sent they must match). Repeating a request_id with the same fields returns the
+//    original response and changes nothing; with different fields it fails with ALREADY_EXISTS.
+//  * Authenticate with the `authorization` metadata entry: `Basic base64(team:code)` for service teams,
+//    or `Bearer <token>` from AuthService.Login for the website.
+//  * Scalar request fields are `optional` where zero/false is a meaningful value, so "not sent" can be
+//    told apart from 0. A missing required field fails with INVALID_ARGUMENT.
+//
+// Status codes
+//  UNAUTHENTICATED       missing or wrong credentials
+//  PERMISSION_DENIED     the caller's team may not call this RPC
+//  INVALID_ARGUMENT      a field is missing or invalid
+//  NOT_FOUND             unknown hardware id or checkout id
+//  FAILED_PRECONDITION   a stock rule would be broken (e.g. not enough reserved stock)
+//  ABORTED               stale expected_version, or a concurrent change: refresh and retry
+//  ALREADY_EXISTS        duplicate asset tag, or request_id reused with different fields
+//  RESOURCE_EXHAUSTED    too many failed sign-in attempts; wait five minutes
+//  UNAVAILABLE           storage temporarily unavailable: resend the same request_id
+syntax = "proto3";
+
+package hardware.v1;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+// ---------------------------------------------------------------------------------------------
+// Services
+// ---------------------------------------------------------------------------------------------
+
+service HardwareService {
+  // Admin only.
+  rpc CreateHardware(CreateHardwareRequest) returns (Hardware);
+  rpc ListHardware(ListHardwareRequest) returns (ListHardwareResponse);
+  rpc GetHardware(GetHardwareRequest) returns (Hardware);
+  rpc GetAvailability(GetHardwareRequest) returns (AvailabilityResponse);
+  // Admin only.
+  rpc UpdateHardware(UpdateHardwareRequest) returns (Hardware);
+  // Admin only.
+  rpc RetireHardware(RetireHardwareRequest) returns (Hardware);
+  // Admin only.
+  rpc AdjustHardware(AdjustHardwareRequest) returns (Hardware);
+  // Sets (does not add to) the quantity reserved for a project. Returns the hardware pool.
+  rpc AllocateHardware(AllocateHardwareRequest) returns (Hardware);
+  rpc ListAllocations(ListAllocationsRequest) returns (ListAllocationsResponse);
+  // Returns the new checkout (not the hardware pool).
+  rpc CreateCheckout(CreateCheckoutRequest) returns (Checkout);
+  rpc ListCheckouts(ListCheckoutsRequest) returns (ListCheckoutsResponse);
+  // Adds `quantity` to the checkout's returned total. Returns the checkout.
+  rpc ReturnCheckout(ReturnCheckoutRequest) returns (Checkout);
+  // Admin only. Sets the checkout's returned total to an exact value. Returns the checkout.
+  rpc CorrectCheckout(CorrectCheckoutRequest) returns (Checkout);
+  rpc ListTransactions(ListTransactionsRequest) returns (ListTransactionsResponse);
+  rpc GetSummary(GetSummaryRequest) returns (SummaryResponse);
+}
+
+service AuthService {
+  // Public.
+  rpc GetAuthMethods(GetAuthMethodsRequest) returns (AuthMethodsResponse);
+  // Public. Website sign-in with a team name and code (only teams allowed to sign in to the website).
+  rpc Login(LoginRequest) returns (LoginResponse);
+  // Public. Local development sign-in; not available in production.
+  rpc DevLogin(DevLoginRequest) returns (LoginResponse);
+  // Bearer token only.
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+  // Bearer token only.
+  rpc Me(MeRequest) returns (MeResponse);
+}
+
+service OpsService {
+  // Public. Fails with UNAVAILABLE unless the database is a transactional replica set.
+  rpc Ready(ReadyRequest) returns (ReadyResponse);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Records
+// ---------------------------------------------------------------------------------------------
+
+// A pool of identical units. Invariant: 0 <= out <= reserved <= total.
+message Hardware {
+  string id = 1;
+  string name = 2;
+  string category = 3;
+  string description = 4;
+  string asset_tag = 5;
+  string serial = 6;
+  // active | damaged | under_maintenance | retired
+  string status = 7;
+  // Units owned, including units checked out.
+  int64 total = 8;
+  // Units allocated to projects (checked out or not).
+  int64 reserved = 9;
+  // Units checked out right now. NOT "out of stock".
+  int64 out = 10;
+  // Increases by 1 on every change to this pool. Send it back as expected_version.
+  int64 version = 11;
+  // total - out: units not currently checked out (may be reserved by other projects).
+  int64 available = 12;
+  // total - reserved: units that can still be allocated to a project.
+  int64 unallocated = 13;
+}
+
+// One project's share of one hardware pool.
+message Allocation {
+  // "<hardware_id>:<project_id>"
+  string id = 1;
+  string hardware_id = 2;
+  string project_id = 3;
+  // Units reserved for the project.
+  int64 quantity = 4;
+  // Of those, units checked out right now. The project can still check out quantity - out.
+  int64 out = 5;
+  int64 version = 6;
+}
+
+message Checkout {
+  string id = 1;
+  string project_id = 2;
+  string hardware_id = 3;
+  string user_id = 4;
+  // Units lent in this checkout. Never changes.
+  int64 quantity = 5;
+  // Units given back so far (running total).
+  int64 returned = 6;
+  int64 version = 7;
+  google.protobuf.Timestamp created_at = 8;
+  // quantity - returned.
+  int64 outstanding = 9;
+}
+
+message AuditEvent {
+  string id = 1;
+  // team:<name> for service callers.
+  string actor = 2;
+  // create | edit | retire | adjust | allocate | checkout | return | correct
+  string operation = 3;
+  // Checkout id for checkout/return/correct, hardware id otherwise.
+  string entity = 4;
+  string hardware_id = 5;
+  optional string project_id = 6;
+  optional string user_id = 7;
+  string reason = 8;
+  google.protobuf.Timestamp timestamp = 9;
+  // Snapshots of the stored hardware / allocations / checkout records before and after the change.
+  google.protobuf.Struct before = 10;
+  google.protobuf.Struct after = 11;
+  // A hash of the caller and the request number, not the request number itself.
+  string request_id = 12;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Hardware requests
+// ---------------------------------------------------------------------------------------------
+
+message CreateHardwareRequest {
+  string name = 1;
+  string category = 2;
+  optional string description = 3;
+  string asset_tag = 4;
+  optional string serial = 5;
+  optional int64 total = 6;
+  string reason = 7;
+  optional string request_id = 8;
+}
+
+message ListHardwareRequest {
+  // Case-insensitive name or asset-tag prefix.
+  optional string q = 1;
+  optional string status = 2;
+  optional string category = 3;
+  // name_key (default) | asset_key | status | total
+  optional string sort = 4;
+  // asc (default) | desc
+  optional string direction = 5;
+  optional int64 page = 6;
+  optional int64 size = 7;
+}
+
+message ListHardwareResponse {
+  repeated Hardware items = 1;
+  // Matching records across all pages (not the stock `total` inside each item).
+  int64 total = 2;
+  int64 page = 3;
+  int64 size = 4;
+}
+
+message GetHardwareRequest {
+  string hardware_id = 1;
+}
+
+message AvailabilityResponse {
+  Hardware hardware = 1;
+  // "available" when hardware.available > 0, otherwise "unavailable".
+  string availability = 2;
+  // Vendor suggestions; filled only when nothing is available.
+  repeated VendorAlternative alternatives = 3;
+  // "temporarily_unavailable" when the vendor lookup failed (the rest of the response is still valid).
+  optional string alternative_lookup_status = 4;
+}
+
+message VendorAlternative {
+  string source_unit = 1;
+  string vendor = 2;
+  string commodity = 3;
+  string department = 4;
+  string business_line = 5;
+  string category = 6;
+  // These describe procurement spend, not stock.
+  optional double quantity = 7;
+  optional double unit_price = 8;
+  optional double payment_amount = 9;
+  optional double monthly_charges = 10;
+}
+
+message UpdateHardwareRequest {
+  string hardware_id = 1;
+  optional int64 expected_version = 2;
+  string reason = 3;
+  optional string name = 4;
+  optional string category = 5;
+  optional string description = 6;
+  optional string asset_tag = 7;
+  optional string serial = 8;
+  // active | damaged | under_maintenance
+  optional string status = 9;
+  optional string request_id = 10;
+}
+
+message RetireHardwareRequest {
+  string hardware_id = 1;
+  optional int64 expected_version = 2;
+  string reason = 3;
+  // Must be true.
+  optional bool confirmed = 4;
+  optional string request_id = 5;
+}
+
+message AdjustHardwareRequest {
+  string hardware_id = 1;
+  optional int64 expected_version = 2;
+  string reason = 3;
+  // Signed, non-zero change to `total`.
+  optional int64 delta = 4;
+  // Must be true.
+  optional bool confirmed = 5;
+  optional string request_id = 6;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Allocation requests
+// ---------------------------------------------------------------------------------------------
+
+message AllocateHardwareRequest {
+  string hardware_id = 1;
+  string project_id = 2;
+  // The new total reserved for the project (not a delta).
+  optional int64 quantity = 3;
+  string reason = 4;
+  optional int64 expected_version = 5;
+  optional string request_id = 6;
+}
+
+message ListAllocationsRequest {
+  optional string project_id = 1;
+  optional string hardware_id = 2;
+  optional int64 page = 3;
+  optional int64 size = 4;
+}
+
+message ListAllocationsResponse {
+  repeated Allocation items = 1;
+  int64 total = 2;
+  int64 page = 3;
+  int64 size = 4;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Checkout requests
+// ---------------------------------------------------------------------------------------------
+
+message CreateCheckoutRequest {
+  string hardware_id = 1;
+  string project_id = 2;
+  string user_id = 3;
+  optional int64 quantity = 4;
+  string reason = 5;
+  optional string request_id = 6;
+}
+
+message ListCheckoutsRequest {
+  optional string project_id = 1;
+  optional string hardware_id = 2;
+  optional string user_id = 3;
+  // Default true: only checkouts with units still out.
+  optional bool outstanding = 4;
+  optional int64 page = 5;
+  optional int64 size = 6;
+}
+
+message ListCheckoutsResponse {
+  repeated Checkout items = 1;
+  int64 total = 2;
+  int64 page = 3;
+  int64 size = 4;
+}
+
+message ReturnCheckoutRequest {
+  string checkout_id = 1;
+  // Units returned now (added to the checkout's returned total).
+  optional int64 quantity = 2;
+  string reason = 3;
+  optional int64 expected_version = 4;
+  optional string request_id = 5;
+}
+
+message CorrectCheckoutRequest {
+  string checkout_id = 1;
+  // The exact cumulative returned total.
+  optional int64 returned = 2;
+  optional int64 expected_version = 3;
+  string reason = 4;
+  // Must be true.
+  optional bool confirmed = 5;
+  optional string request_id = 6;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Audit and summary
+// ---------------------------------------------------------------------------------------------
+
+message ListTransactionsRequest {
+  optional string project_id = 1;
+  optional string hardware_id = 2;
+  optional string actor_id = 3;
+  optional string user_id = 4;
+  optional string operation = 5;
+  google.protobuf.Timestamp start = 6;
+  google.protobuf.Timestamp end = 7;
+  optional int64 page = 8;
+  optional int64 size = 9;
+}
+
+message ListTransactionsResponse {
+  repeated AuditEvent items = 1;
+  int64 total = 2;
+  int64 page = 3;
+  int64 size = 4;
+}
+
+message GetSummaryRequest {}
+
+message SummaryResponse {
+  repeated StatusSummary statuses = 1;
+  repeated ProjectSummary projects = 2;
+  // At most this many projects are listed.
+  int64 project_limit = 3;
+}
+
+message StatusSummary {
+  string status = 1;
+  // Number of hardware pools with this status.
+  int64 records = 2;
+  int64 total = 3;
+  int64 out = 4;
+  int64 reserved = 5;
+}
+
+message ProjectSummary {
+  string project_id = 1;
+  // Units reserved for the project across all pools.
+  int64 quantity = 2;
+  int64 out = 3;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Authentication
+// ---------------------------------------------------------------------------------------------
+
+message GetAuthMethodsRequest {}
+
+message AuthMethodsResponse {
+  // Team name + code sign-in is available.
+  bool password = 1;
+  // Local development sign-in is available.
+  bool local = 2;
+}
+
+message LoginRequest {
+  string name = 1;
+  string code = 2;
+}
+
+message DevLoginRequest {
+  string code = 1;
+}
+
+message LoginResponse {
+  // Send as `authorization: Bearer <token>`. Shown once; only a hash is stored.
+  string token = 1;
+  google.protobuf.Timestamp expires_at = 2;
+  string name = 3;
+  repeated string roles = 4;
+}
+
+message LogoutRequest {}
+message LogoutResponse {}
+
+message MeRequest {}
+
+message MeResponse {
+  string sub = 1;
+  string name = 2;
+  repeated string roles = 3;
+}
+
+message ReadyRequest {}
+
+message ReadyResponse {
+  string status = 1;
+}

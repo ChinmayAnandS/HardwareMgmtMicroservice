@@ -11,3 +11,7 @@ test-results
 .coverage*
 htmlcov
 SOURCE.md
+**/.venv
+**/node_modules
+**/.ruff_cache
+.claude

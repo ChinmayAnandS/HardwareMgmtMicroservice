@@ -2,12 +2,11 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from uuid import uuid4
-from fastapi import HTTPException
 from pymongo import MongoClient
 from pymongo.errors import DuplicateKeyError
 from pymongo.read_concern import ReadConcern
 from pymongo.write_concern import WriteConcern
-from .domain import Conflict, require, transition, validate
+from .domain import Conflict, NotFound, require, transition, validate
 
 
 def now():
@@ -34,7 +33,7 @@ class Store:
     def get(self, collection, entity, session=None):
         value = self.db[collection].find_one({'_id': entity}, session=session)
         if value is None:
-            raise HTTPException(404, 'Entity not found')
+            raise NotFound('Entity not found')
         return value
 
     def mutate(self, actor, key, command, entity, data):
@@ -44,7 +43,7 @@ class Store:
         def work(s):
             previous = self.db.requests.find_one({'_id': request_id}, session=s)
             if previous:
-                require(previous['fingerprint'] == fingerprint, 'Idempotency key reused for a different request')
+                require(previous['fingerprint'] == fingerprint, 'Request number reused for a different request', 'ALREADY_EXISTS')
                 return previous['response']
             if command == 'create':
                 h = {k: data[k] for k in ('name', 'category', 'description', 'asset_tag', 'serial', 'total')}
@@ -62,7 +61,7 @@ class Store:
                 # All commands also replace hardware: it is the serialization point.
                 expected = c if c else h
                 if 'expected_version' in data:
-                    require(data['expected_version'] == expected['version'], 'Stale version; refresh current values')
+                    require(data['expected_version'] == expected['version'], 'Stale version; refresh current values', 'ABORTED')
                 if c:
                     data2 = dict(data, project_id=c['project_id'])
                 else:
@@ -70,7 +69,7 @@ class Store:
                 before = {'hardware': h, 'allocations': aa, 'checkout': c}
                 nh, na, nc = transition(h, aa, command, data2, c)
                 result = self.db.hardware.replace_one({'_id': h['_id'], 'version': h['version']}, nh, session=s)
-                require(result.modified_count == 1, 'Concurrent change; retry')
+                require(result.modified_count == 1, 'Concurrent change; retry', 'ABORTED')
                 for a in na:
                     self.db.allocations.replace_one({'_id': a['_id']}, a, upsert=True, session=s)
                 if nc:
@@ -98,6 +97,4 @@ class Store:
             prior = self.db.requests.find_one({'_id': request_id})
             if prior and prior['fingerprint'] == fingerprint:
                 return prior['response']
-            raise HTTPException(409, 'Duplicate asset tag or idempotency key') from None
-        except Conflict as e:
-            raise HTTPException(409, str(e)) from None
+            raise Conflict('Duplicate asset tag or request number', 'ALREADY_EXISTS') from None

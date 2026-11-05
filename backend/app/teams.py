@@ -6,31 +6,36 @@ from the environment variable listed for the team (generate one per team with
 ). A team whose variable is empty is disabled.
 
 - ui=True  -> the team can sign in to the website (name + code form) as a full administrator.
-- api      -> what the team may call directly with HTTP Basic auth (username = team name,
-              password = team code). 'all' means every /api endpoint.
+- api      -> what the team may call directly with Basic credentials in the `authorization`
+              metadata (team name + team code). 'all' means every HardwareService RPC.
 
 To add a team or change permissions, edit TEAMS below and redeploy.
 """
-import re
 
 TEAMS = {
     'hardware-admin': {'env': 'TEAM_CODE_HARDWARE_ADMIN', 'ui': True, 'api': 'all'},
     'projects-team': {'env': 'TEAM_CODE_PROJECTS_TEAM', 'ui': False, 'api': ('read', 'allocate', 'checkout', 'return')},
     'front-end': {'env': 'TEAM_CODE_FRONT_END', 'ui': False, 'api': ('read', 'allocate', 'checkout', 'return')},
-    'users-team': {'env': 'TEAM_CODE_USERS_TEAM', 'ui': False, 'api': ('read',)}
+    'users-team': {'env': 'TEAM_CODE_USERS_TEAM', 'ui': False, 'api': ('read',)},
 }
 
-# Operation name -> (HTTP method, path pattern) pairs it covers.
+# Operation name -> the HardwareService RPCs it covers. RPCs in no operation (CreateHardware,
+# UpdateHardware, RetireHardware, AdjustHardware, CorrectCheckout) are for 'all' teams only.
 OPERATIONS = {
-    'read': (('GET', re.compile(r'^/api/(?!me$).+')), ('HEAD', re.compile(r'^/api/(?!me$).+'))),
-    'allocate': (('PUT', re.compile(r'^/api/hardware/[^/]+/allocations/[^/]+$')),),
-    'checkout': (('POST', re.compile(r'^/api/checkouts$')),),
-    'return': (('POST', re.compile(r'^/api/checkouts/[^/]+/returns$')),),
+    'read': ('GetHardware', 'ListHardware', 'GetAvailability', 'ListAllocations', 'ListCheckouts',
+             'ListTransactions', 'GetSummary'),
+    'allocate': ('AllocateHardware',),
+    'checkout': ('CreateCheckout',),
+    'return': ('ReturnCheckout',),
 }
+READ_RPCS = frozenset(OPERATIONS['read'])
+HARDWARE_SERVICE = 'hardware.v1.HardwareService'
 
 
-def allowed(team: str, method: str, path: str) -> bool:
+def allowed(team: str, method: str) -> bool:
+    """`method` is the RPC's full name, e.g. /hardware.v1.HardwareService/CreateCheckout."""
+    service, _, name = method.lstrip('/').partition('/')
+    if service != HARDWARE_SERVICE:
+        return False
     api = TEAMS[team]['api']
-    if api == 'all':
-        return path.startswith('/api/') and path != '/api/me'
-    return any(m == method and pattern.match(path) for op in api for m, pattern in OPERATIONS[op])
+    return api == 'all' or any(name in OPERATIONS[op] for op in api)

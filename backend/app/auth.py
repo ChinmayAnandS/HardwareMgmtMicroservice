@@ -1,24 +1,40 @@
 import base64
 import binascii
 import hashlib
+import re
 import secrets
 from datetime import timedelta
-from fastapi import HTTPException, Request
-from starlette.concurrency import run_in_threadpool
+from urllib.parse import unquote
+from pymongo import ReturnDocument
+from .domain import Conflict
 from .store import now
-from .teams import allowed
+from .teams import READ_RPCS, allowed
+
+ADMIN, AUDITOR = 'Hardware.Admin', 'Hardware.Auditor'
+REQUEST_NUMBER = re.compile(r'^[A-Za-z0-9_.:-]{1,100}$')
 
 
 def digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-def client_ip(request: Request):
-    # Behind Azure the front end appends the real client to X-Forwarded-For (sometimes "ip:port").
-    # Use the right-most entry (added by Azure, not the browser) and drop any port.
-    forwarded = request.headers.get('x-forwarded-for', '')
-    if request.app.state.settings.environment != 'production' or not forwarded:
-        return str(request.client.host)
+def metadata(context):
+    return {k: v for k, v in context.invocation_metadata() if isinstance(v, str)}
+
+
+def peer_host(peer):
+    """gRPC peers look like 'ipv4:10.0.0.5:4455' or 'ipv6:%5B::1%5D:4455'."""
+    kind, _, rest = unquote(peer).partition(':')
+    if rest.startswith('['):
+        return rest[1:rest.find(']')]
+    return rest.rpartition(':')[0] if kind == 'ipv4' else rest
+
+
+def client_ip(context, environment):
+    # Behind a proxy the right-most X-Forwarded-For entry is the one the platform added, not the caller.
+    forwarded = metadata(context).get('x-forwarded-for', '')
+    if environment != 'production' or not forwarded:
+        return peer_host(context.peer())
     last = forwarded.split(',')[-1].strip()
     if last.startswith('['):
         return last[1:last.find(']')]
@@ -32,81 +48,64 @@ def check_team_code(cfg, name: str, code: str) -> bool:
     return bool(expected) and ok
 
 
-def count_failure(request: Request, kind: str, limit: int):
-    """Count a failed sign-in for this client; refuse after `limit` failures in five minutes."""
-    from pymongo import ReturnDocument
-    window = int(now().timestamp()) // 300
-    bucket = digest(f'{kind}:{client_ip(request)}:{window}')
-    doc = request.app.state.store.db.limits.find_one_and_update(
-        {'_id': bucket}, {'$inc': {'attempts': 1}, '$setOnInsert': {'expires_at': now() + timedelta(minutes=10)}},
-        upsert=True, return_document=ReturnDocument.AFTER)
-    if doc['attempts'] > limit:
-        raise HTTPException(429, 'Too many failed attempts. Try again in five minutes')
+class Authenticator:
+    def __init__(self, cfg, store):
+        self.cfg, self.db = cfg, store.db
 
+    def hit(self, context, kind: str, limit: int):
+        """Count an attempt by this client; refuse after `limit` in a five-minute window."""
+        bucket = digest(f'{kind}:{client_ip(context, self.cfg.environment)}:{int(now().timestamp()) // 300}')
+        doc = self.db.limits.find_one_and_update(
+            {'_id': bucket}, {'$inc': {'attempts': 1}, '$setOnInsert': {'expires_at': now() + timedelta(minutes=10)}},
+            upsert=True, return_document=ReturnDocument.AFTER)
+        if doc['attempts'] > limit:
+            raise Conflict('Too many failed attempts. Try again in five minutes', 'RESOURCE_EXHAUSTED')
 
-def team_actor(request: Request, header: str):
-    """HTTP Basic auth: username = team name, password = team code. No cookie, so no CSRF."""
-    cfg = request.app.state.settings
-    try:
-        name, _, code = base64.b64decode(header[6:].strip(), validate=True).decode().partition(':')
-    except (binascii.Error, UnicodeDecodeError):
-        name, code = '', ''
-    if not check_team_code(cfg, name, code):
-        count_failure(request, 'basic', 20)
-        raise HTTPException(401, 'Invalid team name or code')
-    if not allowed(name, request.method, request.url.path):
-        raise HTTPException(403, f'Team {name} is not allowed to call this endpoint')
-    return 'team:' + name
+    def authorization(self, context):
+        return metadata(context).get('authorization', '')
 
+    def team(self, context, header, method):
+        """Basic credentials: team name + team code. Nothing is stored, so there is no session to steal."""
+        try:
+            name, _, code = base64.b64decode(header[6:].strip(), validate=True).decode().partition(':')
+        except (binascii.Error, UnicodeDecodeError):
+            name, code = '', ''
+        if not check_team_code(self.cfg, name, code):
+            self.hit(context, 'basic', 20)
+            raise Conflict('Invalid team name or code', 'UNAUTHENTICATED')
+        if not allowed(name, method):
+            raise Conflict(f'Team {name} is not allowed to call this RPC', 'PERMISSION_DENIED')
+        return 'team:' + name
 
-def actor(request: Request):
-    authorization = request.headers.get('authorization', '')
-    if authorization[:6].lower() == 'basic ':
-        return team_actor(request, authorization)
-    user = request.session.get('user')
-    if not user:
-        raise HTTPException(401, 'Sign in required')
-    roles = set(user.get('roles', []))
-    if not roles.intersection({'Hardware.Admin', 'Hardware.Auditor'}):
-        raise HTTPException(403, 'Administrative role required')
-    if request.method not in ('GET', 'HEAD'):
-        if 'Hardware.Admin' not in roles and request.url.path != '/auth/logout':
-            raise HTTPException(403, 'Hardware.Admin required')
-        csrf = request.headers.get('x-csrf-token', '')
-        if not secrets.compare_digest(csrf, request.session.get('csrf', '!')):
-            raise HTTPException(403, 'Invalid CSRF nonce')
-        if request.headers.get('origin') != request.app.state.settings.origin:
-            raise HTTPException(403, 'Invalid request origin')
-    return user['sub']
-
-
-def install_sessions(app):
-    @app.middleware('http')
-    async def session_middleware(request, call_next):
-        cfg, db = app.state.settings, app.state.store.db
-        cookie = '__Host-hardware' if cfg.environment == 'production' else 'hardware_session'
-        sid = request.cookies.get(cookie, '')
+    def session(self, context):
+        """Bearer token from AuthService.Login. Returns (token digest, user)."""
+        header = self.authorization(context)
+        token = header[7:].strip() if header[:7].lower() == 'bearer ' else ''
         doc = None
-        if sid and len(sid) <= 100:
-            doc = await run_in_threadpool(db.sessions.find_one,
-                                         {'_id': digest(sid), 'expires_at': {'$gt': now()}})
-        request.scope['session'] = doc['data'] if doc else {}
-        original = repr(request.scope['session'])
-        response = await call_next(request)
-        if repr(request.scope['session']) != original:
-            if not request.session or request.scope.get('rotate_session'):
-                if sid:
-                    await run_in_threadpool(db.sessions.delete_one, {'_id': digest(sid)})
-                sid = ''
-            if request.session:
-                sid = sid or secrets.token_urlsafe(32)
-                expires = doc['expires_at'] if doc and not request.scope.get('rotate_session') else now() + timedelta(seconds=cfg.session_seconds)
-                await run_in_threadpool(db.sessions.replace_one, {'_id': digest(sid)},
-                                         {'_id': digest(sid), 'data': request.session, 'expires_at': expires}, upsert=True)
-                response.set_cookie(cookie, sid, max_age=max(0, int((expires-now()).total_seconds())),
-                                    secure=cfg.environment == 'production', httponly=True,
-                                    samesite='lax', path='/')
-            else:
-                response.delete_cookie(cookie, path='/', secure=cfg.environment == 'production',
-                                       httponly=True, samesite='lax')
-        return response
+        if token and len(token) <= 100:
+            doc = self.db.sessions.find_one({'_id': digest(token), 'expires_at': {'$gt': now()}})
+        if not doc:
+            raise Conflict('Sign in required', 'UNAUTHENTICATED')
+        return doc['_id'], doc['data']['user']
+
+    def authenticate(self, context, method):
+        """Who is calling `method` (a full RPC name)? Raises Conflict if they may not."""
+        header = self.authorization(context)
+        if header[:6].lower() == 'basic ':
+            return self.team(context, header, method)
+        _, user = self.session(context)
+        roles = set(user.get('roles', []))
+        if not roles.intersection({ADMIN, AUDITOR}):
+            raise Conflict('Administrative role required', 'PERMISSION_DENIED')
+        if method.rpartition('/')[2] not in READ_RPCS and ADMIN not in roles:
+            raise Conflict('Hardware.Admin required', 'PERMISSION_DENIED')
+        return user['sub']
+
+    def open_session(self, user):
+        token = secrets.token_urlsafe(32)
+        expires = now() + timedelta(seconds=self.cfg.session_seconds)
+        self.db.sessions.insert_one({'_id': digest(token), 'data': {'user': user}, 'expires_at': expires})
+        return token, expires
+
+    def close_session(self, session_id):
+        self.db.sessions.delete_one({'_id': session_id})

@@ -1,5 +1,7 @@
 # Complete Hardware Management Microservice source
 
+> **Historical.** This document describes the earlier REST/FastAPI version. The service now speaks gRPC; see the README ("gRPC API" and "Verification") and `docs/SERVICE-API.md` for the current contract.
+
 Architecture: administrator → HTTPS administrative UI/proxy → internal FastAPI → TLS MongoDB Atlas. Backend OIDC sessions use Entra ID; managed identity accesses Key Vault and ACR.
 
 Stack: Python/FastAPI/PyMongo, plain JavaScript/Nginx, MongoDB replica set, Azure Container Apps Consumption. Fixed database, NAT/IP, registry, backups and logging can dominate an intermittent compute bill; see docs/COSTS.md for assumptions and comparisons.

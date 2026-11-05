@@ -1,5 +1,15 @@
-# Single image for Azure Container Apps: FastAPI API + the static UI, one container, one URL.
-# Built from the repository root:  docker build -f Dockerfile.azure -t hardware .
+# gRPC API image for Azure Container Apps (build from the repository root):
+#   docker build -f Dockerfile.azure -t hardware-api .
+# This image is only the API. The browser UI is the separate Nginx image (ui/Dockerfile) and the
+# gRPC-Web proxy is the Envoy image (proxy/Dockerfile). Expose the API with HTTP/2 ingress on port 50051.
+FROM python:3.12-slim-bookworm AS stubs
+WORKDIR /build
+RUN pip install --no-cache-dir grpcio-tools==1.85.1
+COPY proto proto
+RUN mkdir out \
+ && python -m grpc_tools.protoc -Iproto --python_out=out --grpc_python_out=out --pyi_out=out proto/hardware/v1/hardware.proto \
+ && touch out/hardware/__init__.py out/hardware/v1/__init__.py
+
 FROM python:3.12-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /app
@@ -17,10 +27,10 @@ RUN apt-get update \
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt && useradd --uid 10001 --create-home service
 
+COPY --from=stubs --chown=10001:10001 /build/out/hardware hardware
 COPY --chown=10001:10001 backend/app app
-# The API serves these files itself when /app/static exists (no Nginx needed).
-COPY --chown=10001:10001 ui/index.html ui/app.js ui/style.css static/
 
 USER 10001
-EXPOSE 8000
-CMD ["uvicorn", "app.asgi:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log", "--no-proxy-headers"]
+EXPOSE 50051
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s CMD ["python", "-m", "app.healthcheck"]
+CMD ["python", "-m", "app.server"]

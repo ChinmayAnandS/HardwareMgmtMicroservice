@@ -1,8 +1,11 @@
 # API response guide
 
-What every endpoint returns, and what each field means. For authentication, permissions and request numbers see [SERVICE-API.md](SERVICE-API.md).
+What every RPC returns, and what each field means. For credentials, permissions and request numbers see [SERVICE-API.md](SERVICE-API.md). The authoritative definitions are the comments in [`hardware.proto`](../proto/hardware/v1/hardware.proto).
 
-Everything is JSON. Timestamps are ISO 8601 in UTC, e.g. `2026-11-04T15:30:00+00:00`.
+Responses are protobuf messages. Examples below are shown as JSON for readability (that is how `grpcurl` prints them; field names appear in `camelCase` there, e.g. `assetTag`). Two protobuf behaviours to remember:
+
+- **A field that holds its default value (`0`, `""`, `false`) may not be printed by some tools**, but it is always present on the typed message in your client library.
+- Timestamps are `google.protobuf.Timestamp` (seconds + nanos since the Unix epoch, UTC). In JSON they print as `2026-11-04T15:30:00Z`.
 
 ## 1. Read this first: the three stock numbers
 
@@ -29,9 +32,9 @@ total ────────────────────────�
                             the shelf     (unallocated)
 ```
 
-### Derived fields (added by some endpoints)
+### Derived fields (on every Hardware message)
 
-Only `GET /api/hardware/{id}` and `GET /api/hardware/{id}/availability` add these. They are **not** in list responses or in the responses to create, edit, allocate, etc.
+Every `Hardware` message, whichever RPC returned it, carries two computed numbers:
 
 | Field | Formula | Meaning |
 |---|---|---|
@@ -46,53 +49,49 @@ Use the project's allocation, not `available`:
 can check out now = allocation.quantity - allocation.out
 ```
 
-Get the allocation from `GET /api/allocations?project_id=X&hardware_id=Y`. A check-out larger than this fails with 409 `Insufficient project stock`.
+Get the allocation from `ListAllocations(project_id=X, hardware_id=Y)`. A check-out larger than this fails with `FAILED_PRECONDITION` (`Insufficient project stock`).
 
 ## 2. Record shapes
+
+Identifiers are called **`id`** (the storage layer's `_id`).
 
 ### Hardware
 
 ```json
 {
-  "_id": "7d0c2a9e-4c3b-4f1e-9a55-0e6d2f4b8a10",
+  "id": "7d0c2a9e-4c3b-4f1e-9a55-0e6d2f4b8a10",
   "name": "ThinkPad T14",
   "category": "Laptop",
   "description": "14-inch, 16 GB",
-  "asset_tag": "LT-0042",
+  "assetTag": "LT-0042",
   "serial": "PF3XYZ",
   "status": "active",
-  "total": 10,
-  "reserved": 3,
-  "out": 1,
-  "version": 4,
-  "name_key": "thinkpad t14",
-  "asset_key": "lt-0042"
+  "total": "10",
+  "reserved": "3",
+  "out": "1",
+  "version": "4",
+  "available": "9",
+  "unallocated": "7"
 }
 ```
 
+(grpcurl prints 64-bit integers as strings; your client library gives you integers.)
+
 | Field | Notes |
 |---|---|
-| `_id` | The hardware id. Use it as `hardware_id` everywhere. |
+| `id` | The hardware id. Use it as `hardware_id` everywhere. |
 | `status` | `active`, `damaged`, `under_maintenance` or `retired`. Only `active` stock can be allocated or checked out. `retired` is permanent. |
-| `version` | Starts at 1 and goes up by 1 on **every** change to this pool, including allocations, check-outs and returns. Send it back as `expected_version` to detect stale data. |
-| `name_key`, `asset_key` | Lower-case copies used for searching. Ignore them. |
+| `version` | Starts at 1 and goes up by 1 on **every** change to this pool, including allocations, check-outs and returns. Send it back as `expected_version`. |
 
 ### Allocation (a project's share of a pool)
 
 ```json
-{
-  "_id": "7d0c2a9e-...:proj-1",
-  "hardware_id": "7d0c2a9e-...",
-  "project_id": "proj-1",
-  "quantity": 3,
-  "out": 1,
-  "version": 3
-}
+{ "id": "7d0c2a9e-...:proj-1", "hardwareId": "7d0c2a9e-...", "projectId": "proj-1", "quantity": "3", "out": "1", "version": "3" }
 ```
 
 | Field | Notes |
 |---|---|
-| `_id` | Always `<hardware_id>:<project_id>`. |
+| `id` | Always `<hardware_id>:<project_id>`. |
 | `quantity` | Units reserved for this project. |
 | `out` | Of those, how many are checked out right now. Never more than `quantity`. |
 | `version` | Goes up by 1 on each allocate, check-out and return for this project. |
@@ -101,56 +100,49 @@ Get the allocation from `GET /api/allocations?project_id=X&hardware_id=Y`. A che
 
 ```json
 {
-  "_id": "b51f0c1d-...",
-  "project_id": "proj-1",
-  "hardware_id": "7d0c2a9e-...",
-  "user_id": "student-7",
-  "quantity": 2,
-  "returned": 1,
-  "version": 2,
-  "created_at": "2026-11-04T15:30:00+00:00"
+  "id": "b51f0c1d-...", "projectId": "proj-1", "hardwareId": "7d0c2a9e-...", "userId": "student-7",
+  "quantity": "2", "returned": "1", "version": "2", "createdAt": "2026-11-04T15:30:00Z", "outstanding": "1"
 }
 ```
 
 | Field | Notes |
 |---|---|
-| `_id` | The checkout id. Use it in `/api/checkouts/{checkout_id}/returns`. |
+| `id` | The checkout id. Use it as `checkout_id` in `ReturnCheckout` and `CorrectCheckout`. |
 | `quantity` | Units lent in this checkout. Never changes. |
 | `returned` | Units given back so far (a running total, not the last return). |
-| outstanding | Not a field. Work it out as `quantity - returned`. The checkout is fully closed when `returned == quantity`. |
+| `outstanding` | `quantity - returned`: units still with the borrower. The checkout is closed when this is 0. |
 
 The check-out `reason` is recorded in the audit log, not on the checkout.
 
-## 3. What each endpoint returns
+## 3. What each RPC returns
 
-The most common source of confusion: **the response is not always the thing named in the URL.**
+The most common source of confusion: **the response is not always the thing the request was about.**
 
-| Endpoint | Status | Returns |
-|---|---|---|
-| `POST /api/hardware` | 201 | **Hardware** record |
-| `GET /api/hardware` | 200 | **List** of hardware (see section 4) |
-| `GET /api/hardware/{id}` | 200 | Hardware + `available` + `unallocated` |
-| `GET /api/hardware/{id}/availability` | 200 | Hardware + `available` + `unallocated` + `availability` + `alternatives` (section 5) |
-| `PATCH /api/hardware/{id}` | 200 | **Hardware** record (after the edit) |
-| `POST /api/hardware/{id}/retire` | 200 | **Hardware** record, `status: "retired"` |
-| `POST /api/hardware/{id}/adjustments` | 200 | **Hardware** record, `total` changed by `delta` |
-| `PUT /api/hardware/{id}/allocations/{project_id}` | 200 | **Hardware** record (not the allocation!) |
-| `GET /api/allocations` | 200 | **List** of allocations |
-| `POST /api/checkouts` | 201 | **Checkout** record (not the hardware!) |
-| `GET /api/checkouts` | 200 | **List** of checkouts |
-| `POST /api/checkouts/{id}/returns` | 200 | **Checkout** record, `returned` increased |
-| `POST /api/checkouts/{id}/corrections` | 200 | **Checkout** record, `returned` set to the given value |
-| `GET /api/transactions` | 200 | **List** of audit events (section 6) |
-| `GET /api/summary` | 200 | Totals per status and per project (section 7) |
+| RPC | Returns |
+|---|---|
+| `CreateHardware` | **Hardware** |
+| `ListHardware` | **List** of Hardware (section 4) |
+| `GetHardware` | **Hardware** |
+| `GetAvailability` | `AvailabilityResponse` (section 5) |
+| `UpdateHardware` | **Hardware** (after the edit) |
+| `RetireHardware` | **Hardware**, `status: "retired"` |
+| `AdjustHardware` | **Hardware**, `total` changed by `delta` |
+| `AllocateHardware` | **Hardware** (not the allocation!) |
+| `ListAllocations` | **List** of Allocation |
+| `CreateCheckout` | **Checkout** (not the hardware!) |
+| `ListCheckouts` | **List** of Checkout |
+| `ReturnCheckout` | **Checkout**, `returned` increased |
+| `CorrectCheckout` | **Checkout**, `returned` set to the given value |
+| `ListTransactions` | **List** of AuditEvent (section 6) |
+| `GetSummary` | `SummaryResponse` (section 7) |
 
 Things to know:
 
-- **Allocate returns the hardware record.** To see the project's resulting allocation, call `GET /api/allocations?project_id=...&hardware_id=...`. Check the response's `reserved` for the pool-wide effect.
-- **Check-out and return return the checkout record, not the hardware.** The pool's new `out` is not in the response; call `GET /api/hardware/{id}` for it.
-- **Mutation responses never include `available` or `unallocated`.** Only the two GET endpoints in rows 3 and 4 do.
-- **`PUT .../allocations/{project_id}` sets the quantity; it does not add.** `{"quantity": 3}` means "this project has 3 reserved", whether it had 0 or 10 before. `reserved` on the pool moves by the difference.
-- **Returns add; corrections set.** `POST .../returns` with `quantity: 1` adds 1 to `returned`. `POST .../corrections` with `returned: 1` sets `returned` to exactly 1.
-- **Retrying with the same request number returns the original response.** It is the stored copy from the first call, so its `version` and counters can be older than the current state. It does not run the operation again. A replayed check-out still answers 201.
+- **`AllocateHardware` returns the hardware pool.** To see the project's resulting allocation, call `ListAllocations(project_id, hardware_id)`. The pool's `reserved` shows the pool-wide effect.
+- **`CreateCheckout` and `ReturnCheckout` return the checkout, not the pool.** The pool's new `out` is not in the response; call `GetHardware` for it.
+- **`AllocateHardware` sets the quantity; it does not add.** `quantity: 3` means "this project has 3 reserved", whether it had 0 or 10 before. `reserved` on the pool moves by the difference.
+- **Returns add; corrections set.** `ReturnCheckout` with `quantity: 1` adds 1 to `returned`. `CorrectCheckout` with `returned: 1` sets `returned` to exactly 1.
+- **Retrying with the same request number returns the original response.** It is the stored copy from the first call, so its `version` and counters can be older than the current state. It does not run the operation again.
 
 ### Worked example
 
@@ -158,143 +150,118 @@ Start: create a pool of 10 laptops, then run the steps below.
 
 | Step | Call | Response shows | Pool after |
 |---|---|---|---|
-| 1 | Create `total: 10` | Hardware: `total 10, reserved 0, out 0, version 1` | available 10, unallocated 10 |
-| 2 | Allocate 3 to `proj-1` | Hardware: `reserved 3, out 0, version 2` | available 10, unallocated 7 |
-| 3 | Check out 2 to `student-7` | Checkout: `quantity 2, returned 0, version 1` | `out 2`, available 8 |
-| 4 | Return 1 | Checkout: `quantity 2, returned 1, version 2` | `out 1`, available 9 |
+| 1 | `CreateHardware(total=10)` | Hardware: `total 10, reserved 0, out 0, version 1` | available 10, unallocated 10 |
+| 2 | `AllocateHardware(proj-1, quantity=3)` | Hardware: `reserved 3, out 0, version 2` | available 10, unallocated 7 |
+| 3 | `CreateCheckout(proj-1, student-7, quantity=2)` | Checkout: `quantity 2, returned 0, outstanding 2, version 1` | `out 2`, available 8 |
+| 4 | `ReturnCheckout(quantity=1)` | Checkout: `quantity 2, returned 1, outstanding 1, version 2` | `out 1`, available 9 |
 
 Reading step 3 shows why the pool and the checkout look different: the response is the checkout (`returned: 0` is *its* counter), and the pool's `out: 2` only shows up if you fetch the hardware.
 
 ## 4. List responses
 
-`GET /api/hardware`, `/api/allocations`, `/api/checkouts` and `/api/transactions` all use this envelope:
+`ListHardware`, `ListAllocations`, `ListCheckouts` and `ListTransactions` all return:
 
 ```json
-{ "items": [ ... ], "total": 57, "page": 1, "size": 25 }
+{ "items": [ ... ], "total": "57", "page": "1", "size": "25" }
 ```
 
 | Field | Meaning |
 |---|---|
 | `items` | The records on this page. |
-| `total` | **Number of matching records across all pages.** This is a record count, **not** the `total` stock field inside each hardware item. |
+| `total` | **Number of matching records across all pages.** This is a record count, **not** the stock `total` inside each hardware item. |
 | `page`, `size` | The page you asked for (default 1 and 25; `size` is at most 100). |
 
 Last page: `page * size >= total`. The maximum offset is 20 000 records; narrow your filters instead of paging that deep.
 
 Defaults worth knowing:
 
-- `GET /api/checkouts` returns **only outstanding checkouts** (`returned < quantity`) unless you pass `outstanding=false`.
+- `ListCheckouts` returns **only outstanding checkouts** (`returned < quantity`) unless you send `outstanding: false`.
 - Hardware sorts by name; checkouts and transactions are newest first.
-- Hardware items do not include `available` or `unallocated`.
 
 ## 5. Availability response
 
-`GET /api/hardware/{id}/availability` is the hardware record plus:
+`GetAvailability` returns:
 
 | Field | Meaning |
 |---|---|
-| `available`, `unallocated` | As in section 1. |
-| `availability` | `"available"` if `available > 0`, otherwise `"unavailable"`. Based on `total - out` only, so it can say `available` for a pool that is entirely reserved to other projects. |
-| `alternatives` | `[]` when `available > 0`. When nothing is available, up to 10 vendor suggestions from the Azure SQL vendor-spend table. |
-| `alternative_lookup_status` | Present only when the lookup failed: `"temporarily_unavailable"`. The rest of the response is still valid. `alternatives` is `[]` in that case. |
+| `hardware` | The Hardware message (including `available` and `unallocated`). |
+| `availability` | `"available"` if `hardware.available > 0`, otherwise `"unavailable"`. Based on `total - out` only, so it can say `available` for a pool that is entirely reserved to other projects. |
+| `alternatives` | Empty when `available > 0`. When nothing is available, up to 10 vendor suggestions from the Azure SQL vendor-spend table. |
+| `alternative_lookup_status` | Set only when the lookup failed: `"temporarily_unavailable"`. The rest of the response is still valid and `alternatives` is empty. |
 
-Each alternative is a row from the vendor table: `source_unit`, `vendor`, `commodity`, `department`, `business_line`, `quantity`, `unit_price`, `payment_amount`, `monthly_charges`, `category`. These are spend records, not stock, so `quantity` there is not inventory.
+Each `VendorAlternative` is a row from the vendor table: `source_unit`, `vendor`, `commodity`, `department`, `business_line`, `category` (text) and `quantity`, `unit_price`, `payment_amount`, `monthly_charges` (numbers, each present only if the source row has it; use `HasField`). These are spend records, not stock, so `quantity` there is not inventory.
 
-## 6. Audit events (`GET /api/transactions`)
+## 6. Audit events (`ListTransactions`)
 
-Every successful change writes one event. Filters: `project_id`, `hardware_id`, `actor_id`, `user_id`, `operation`, `start`, `end` (timestamps must include a timezone).
+Every successful change writes one event. Filters: `project_id`, `hardware_id`, `actor_id`, `user_id`, `operation`, `start`, `end` (timestamps).
 
 ```json
 {
-  "_id": "e1c0...",
-  "actor": "team:projects-team",
-  "operation": "checkout",
-  "entity": "b51f0c1d-...",
-  "hardware_id": "7d0c2a9e-...",
-  "project_id": "proj-1",
-  "user_id": "student-7",
-  "reason": "Lab session",
-  "timestamp": "2026-11-04T15:30:00+00:00",
+  "id": "e1c0...", "actor": "team:projects-team", "operation": "checkout", "entity": "b51f0c1d-...",
+  "hardwareId": "7d0c2a9e-...", "projectId": "proj-1", "userId": "student-7", "reason": "Lab session",
+  "timestamp": "2026-11-04T15:30:00Z",
   "before": { "hardware": { }, "allocations": [ ], "checkout": null },
   "after":  { "hardware": { }, "allocations": [ ], "checkout": { } },
-  "request_id": "9f86d081..."
+  "requestId": "9f86d081..."
 }
 ```
 
 | Field | Notes |
 |---|---|
-| `actor` | Who did it: `team:<name>` for API callers. |
+| `actor` | Who did it: `team:<name>` for service callers. |
 | `operation` | `create`, `edit`, `retire`, `adjust`, `allocate`, `checkout`, `return` or `correct`. |
 | `entity` | The id of what the call returned: the **checkout** id for `checkout`, `return` and `correct`, the **hardware** id for everything else. |
-| `project_id` | `null` for `create`, `edit`, `retire`, `adjust`. |
-| `user_id` | `null` unless the operation involved a checkout. |
-| `before` / `after` | Full snapshots. `create` has `before: {}` and `after: {"hardware": ...}`. Other operations hold `hardware`, `allocations` (all of the pool's allocations) and `checkout` (`null` if none). Compare them to see exactly what changed. |
+| `project_id`, `user_id` | **Unset** (not empty) when not applicable: `project_id` for `create`, `edit`, `retire`, `adjust`; `user_id` unless the operation involved a checkout. Test with `HasField`. |
+| `before` / `after` | `google.protobuf.Struct` snapshots of the **stored** records (so they use the storage layer's `_id`, not `id`). `create` has an empty `before`. Other operations hold `hardware`, `allocations` (all of the pool's allocations) and `checkout` (`null` if none). Compare them to see exactly what changed. Numbers inside a Struct are doubles. |
 | `request_id` | **Not the request number you sent.** It is a SHA-256 hash of the caller plus your request number, so you cannot search the log for `REQ-1001-checkout` directly. |
 
-## 7. Summary (`GET /api/summary`)
+## 7. Summary (`GetSummary`)
 
 ```json
 {
-  "statuses": [
-    { "_id": "active", "records": 12, "total": 140, "out": 18, "reserved": 60 }
-  ],
-  "projects": [
-    { "_id": "proj-1", "quantity": 8, "out": 3 }
-  ],
-  "project_limit": 100
+  "statuses": [ { "status": "active", "records": "12", "total": "140", "out": "18", "reserved": "60" } ],
+  "projects": [ { "projectId": "proj-1", "quantity": "8", "out": "3" } ],
+  "projectLimit": "100"
 }
 ```
 
-- `statuses`: one row per hardware status. `_id` is the **status**. `records` is how many hardware pools have that status; `total`, `out` and `reserved` are the sums across those pools.
-- `projects`: one row per project, sorted by id, capped at `project_limit` (100). `_id` is the **project id**. `quantity` is the sum of units reserved for the project across all pools, and `out` is how many of those are checked out.
+- `statuses`: one row per hardware status. `records` is how many hardware pools have that status; `total`, `out` and `reserved` are the sums across those pools.
+- `projects`: one row per project, sorted by id, capped at `project_limit` (100). `quantity` is the sum of units reserved for the project across all pools, and `out` is how many of those are checked out.
 - Both lists come from one consistent snapshot.
 
 ## 8. Errors
 
-Errors use the HTTP status plus a JSON body.
+A failed call raises a gRPC error with a **status code** and a **message** (`details`). Nothing is changed by a failed call.
 
-Most errors:
-
-```json
-{ "detail": "Insufficient project stock" }
-```
-
-Validation errors (422) carry a list instead:
-
-```json
-{ "detail": [ { "type": "missing", "loc": ["body", "reason"], "msg": "Field required" } ] }
-```
-
-`loc` tells you which field is wrong.
-
-Messages you will meet, and what to do:
-
-| Status | `detail` | Meaning |
+| Code | Message (examples) | What to do |
 |---|---|---|
-| 404 | `Entity not found` | No hardware or checkout with that id. |
-| 409 | `Stale version; refresh current values` | `expected_version` is out of date. Fetch the record and retry. |
-| 409 | `Concurrent change; retry` | Another change landed at the same moment. Retry with the same request number. |
-| 409 | `Idempotency key reused for a different request` | The request number was already used with a different body. |
-| 409 | `Duplicate asset tag or idempotency key` | Asset tag already exists (on create). |
-| 409 | `Insufficient project stock` | Check-out is larger than `allocation.quantity - allocation.out`. |
-| 409 | `Project has no allocation` | Check out or return for a project with no allocation on this pool. |
-| 409 | `Hardware is not active` / `Only active stock can be allocated` | Pool status is not `active`. |
-| 409 | `Return exceeds outstanding quantity` | Return (or correction) would make `returned` exceed `quantity` or go below 0. |
-| 409 | `Cannot reopen inactive stock` | A correction that lowers `returned` on non-active stock. |
-| 409 | `Stock must satisfy 0 <= out <= reserved <= total` | The change would break the core rule, e.g. lowering `total` below `reserved`, or allocating more than `total`. |
-| 409 | `Release allocations before retirement` / `Return all checkouts before changing status` | Set allocations to 0 and return everything first. |
-| 409 | `Retired hardware is immutable` / `Already retired` | Retired pools cannot change. |
-| 422 | `Send a unique request_id in the body or an Idempotency-Key header` | Missing request number. |
-| 422 | `Idempotency-Key header and request_id differ` | Send one, or make them equal. |
+| `NOT_FOUND` | `Entity not found` | No hardware or checkout with that id. |
+| `ABORTED` | `Stale version; refresh current values` | `expected_version` is out of date. Fetch the record and retry. |
+| `ABORTED` | `Concurrent change; retry` | Another change landed at the same moment. Retry with the same request number. |
+| `ALREADY_EXISTS` | `Request number reused for a different request` | The request number was already used with different fields. |
+| `ALREADY_EXISTS` | `Duplicate asset tag or request number` | Asset tag already exists (on create). |
+| `FAILED_PRECONDITION` | `Insufficient project stock` | Check-out is larger than `allocation.quantity - allocation.out`. |
+| `FAILED_PRECONDITION` | `Project has no allocation` | Check out or return for a project with no allocation on this pool. |
+| `FAILED_PRECONDITION` | `Hardware is not active` / `Only active stock can be allocated` | Pool status is not `active`. |
+| `FAILED_PRECONDITION` | `Return exceeds outstanding quantity` | A return or correction would make `returned` exceed `quantity` or go below 0. |
+| `FAILED_PRECONDITION` | `Cannot reopen inactive stock` | A correction that lowers `returned` on non-active stock. |
+| `FAILED_PRECONDITION` | `Stock must satisfy 0 <= out <= reserved <= total` | The change would break the core rule, e.g. lowering `total` below `reserved`, or allocating more than `total`. |
+| `FAILED_PRECONDITION` | `Release allocations before retirement` / `Return all checkouts before changing status` | Set allocations to 0 and return everything first. |
+| `FAILED_PRECONDITION` | `Retired hardware is immutable` / `Already retired` | Retired pools cannot change. |
+| `INVALID_ARGUMENT` | `confirmed: Field required` (and similar `field: reason`) | The message names the field. Fields that must be `true` (`confirmed`) must be sent explicitly. |
+| `INVALID_ARGUMENT` | `Send a unique request_id (or idempotency-key metadata)` | Missing request number. |
+| `INVALID_ARGUMENT` | `idempotency-key metadata and request_id differ` | Send one, or make them equal. |
+| `INVALID_ARGUMENT` | `Delta must be nonzero`, `Start must precede end`, `Narrow filters; maximum offset is 20000` | Fix the request. |
 
-401, 403 and 429 are covered in [SERVICE-API.md](SERVICE-API.md).
+`UNAUTHENTICATED`, `PERMISSION_DENIED`, `RESOURCE_EXHAUSTED` and `UNAVAILABLE` are covered in [SERVICE-API.md](SERVICE-API.md).
 
-## 9. Other endpoints
+## 9. Other RPCs
 
-| Endpoint | Returns |
+| RPC | Returns |
 |---|---|
-| `GET /health` | `{"status": "alive"}` |
-| `GET /ready` | `{"status": "ready"}`, or 503 if the database is not a replica set |
-| `GET /api/me` | Signed-in website user (`sub`, `name`, `roles`, `csrf`). Not available to API teams using Basic auth. |
-| `GET /api/openapi.json` | The OpenAPI schema |
-| `POST /auth/password`, `/auth/dev`, `/auth/logout` | `{"status": "signed_in"}` or `{"status": "signed_out"}` (website only) |
+| `grpc.health.v1.Health/Check` | `status: SERVING` while the process is up (standard gRPC health protocol) |
+| `OpsService.Ready` | `{status: "ready"}`, or `UNAVAILABLE` if the database is not a replica set |
+| `AuthService.Login`, `DevLogin` | `token` (use as `authorization: Bearer <token>`), `expires_at`, `name`, `roles` (website only) |
+| `AuthService.Me` | `sub`, `name`, `roles` of the signed-in website user. Not available to team callers. |
+| `AuthService.GetAuthMethods` | `password` and `local`: which sign-in forms the website should show |
+| `AuthService.Logout` | Empty message; the token stops working |

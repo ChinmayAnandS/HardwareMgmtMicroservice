@@ -3,12 +3,22 @@ from copy import deepcopy
 
 
 class Conflict(Exception):
-    pass
+    """A request the service understood but refused. `code` is the gRPC status name to return."""
+    code = 'FAILED_PRECONDITION'
+
+    def __init__(self, message, code=None):
+        super().__init__(message)
+        if code:
+            self.code = code
 
 
-def require(condition, message):
+class NotFound(Conflict):
+    code = 'NOT_FOUND'
+
+
+def require(condition, message, code=None):
     if not condition:
-        raise Conflict(message)
+        raise Conflict(message, code)
 
 
 def validate(hardware, allocations):
