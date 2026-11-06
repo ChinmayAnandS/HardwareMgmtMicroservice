@@ -1,4 +1,5 @@
-# Builds the single Container Apps image on every push to dev and publishes it to
+# Builds the Container Apps images on every push to dev (the gRPC API from Dockerfile.azure, and the
+# website + gRPC-Web proxy from web/Dockerfile) and publishes them to
 # GitHub Container Registry (free). No Azure credentials are stored in GitHub.
 name: container-image
 on:
@@ -22,7 +23,8 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - name: Build and push the gRPC API image
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.azure
@@ -30,14 +32,25 @@ jobs:
           tags: |
             ${{ steps.name.outputs.image }}:latest
             ${{ steps.name.outputs.image }}:${{ github.sha }}
+      - name: Build and push the website image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: web/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.name.outputs.image }}-web:latest
+            ${{ steps.name.outputs.image }}-web:${{ github.sha }}
       - name: How to deploy this build
         run: |
           {
-            echo "### Image published"
-            echo '`${{ steps.name.outputs.image }}:${{ github.sha }}`'
+            echo "### Images published"
+            echo '`${{ steps.name.outputs.image }}:${{ github.sha }}` (gRPC API, ingress http2, port 50051)'
+            echo '`${{ steps.name.outputs.image }}-web:${{ github.sha }}` (website, ingress http, port 8080)'
             echo
-            echo "Deploy it (replace the app and resource group names):"
+            echo "Update the apps (replace the app and resource group names):"
             echo '```'
-            echo "az containerapp update --name hardware-app --resource-group hardware-rg --image ${{ steps.name.outputs.image }}:${{ github.sha }}"
+            echo "az containerapp update --name hardware-api --resource-group hardware-rg --image ${{ steps.name.outputs.image }}:${{ github.sha }}"
+            echo "az containerapp update --name hardware-web --resource-group hardware-rg --image ${{ steps.name.outputs.image }}-web:${{ github.sha }}"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
