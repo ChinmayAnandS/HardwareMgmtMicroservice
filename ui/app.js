@@ -75,6 +75,9 @@ function listArgs() {
   return args;
 }
 function actions(...buttons) { const d=node('div'); d.append(...buttons); return d; }
+function checkoutEditor(prefill = {}) {
+  return openEditor('Check out stock', prefill, [field('hardware_id','Hardware ID',prefill.hardware_id||''),field('project_id','External project ID',prefill.project_id||''),field('user_id','Borrower ID'),field('quantity','Quantity to check out',1,'number')],v=>mutate('CreateCheckout',{...v,quantity:Number(v.quantity)}));
+}
 function auditFor(hardware_id,project_id) { screen='transactions';page=1;filters={hardware_id,...(project_id?{project_id}:{})};return render(); }
 async function render() {
   $('screen').replaceChildren(node('h2', {dashboard:'Inventory dashboard',hardware:'Hardware inventory',projects:'Project inventory',adjustments:'Inventory adjustments',checkouts:'Outstanding checkouts',transactions:'Immutable transaction history'}[screen]));
@@ -88,9 +91,15 @@ async function render() {
     table(['Project ID','Allocated','Checked out'],s.projects,r=>[r.project_id,r.quantity,r.out]);return;
   }
   if(screen==='hardware'||screen==='adjustments') {
-    searchToolbar([['q','Name / asset tag prefix'],['status','Status','select',['','active','damaged','under_maintenance','retired']],['sort','Sort by','select',['name_key','asset_key','status','total']]]);
+    searchToolbar([['hardware_id','Hardware ID (exact)'],['q','Name / asset tag prefix'],['status','Status','select',['','active','damaged','under_maintenance','retired']],['sort','Sort by','select',['name_key','asset_key','status','total']]]);
     if(writable&&screen==='hardware') $('screen').append(button('Add hardware',()=>openEditor('Add hardware',{},[field('name','Name'),field('category','Category'),field('asset_tag','Unique asset tag'),field('serial','Serial','', 'text',false),field('description','Description','','text',false),field('total','Total units',1,'number')],v=>mutate('CreateHardware',{...v,total:Number(v.total)}))));
-    const data=await api('ListHardware',listArgs());
+    // An exact ID looks the record up directly; the other filters apply to the list search only.
+    const {hardware_id, ...listFilters}=listArgs();
+    let data;
+    if(hardware_id) {
+      try { data={items:[await api('GetHardware',{hardware_id})],total:1,size:25}; }
+      catch(e) { if(e.code!==5) throw e; data={items:[],total:0,size:25}; }
+    } else data=await api('ListHardware',listFilters);
     table(['Name / asset','Category / status','Total','Available / unallocated','Actions'],data.items,h=>{
       const links=[button('Audit',()=>auditFor(h.id)),button('Allocations',()=>{screen='projects';filters={hardware_id:h.id};page=1;return render();})];
       if(writable&&h.status!=='retired') {
@@ -109,11 +118,12 @@ async function render() {
     $('screen').append(choices);document.querySelector('[name=project_id]').setAttribute('list','project-ids');
     if(writable) $('screen').append(button('Set project allocation',()=>openEditor('Set allocation',{},[field('hardware_id','Hardware ID'),field('project_id','External project ID'),field('quantity','New allocated total',1,'number')],async v=>{const h=await api('GetHardware',{hardware_id:v.hardware_id});if(!confirm(`Current total: ${h.total}; reserved: ${h.reserved}; checked out: ${h.out}. Confirm new allocation ${v.quantity}?`))throw new Error('Change cancelled');return mutate('AllocateHardware',{hardware_id:v.hardware_id,project_id:v.project_id,quantity:Number(v.quantity),reason:v.reason,expected_version:h.version});})));
     const data=await api('ListAllocations',listArgs());
-    table(['Project ID','Hardware ID','Allocated','Out','Actions'],data.items,a=>[a.project_id,a.hardware_id,a.quantity,a.out,actions(button('Audit',()=>auditFor(a.hardware_id,a.project_id)),...(writable?[button('Modify',async()=>{const h=await api('GetHardware',{hardware_id:a.hardware_id});openEditor('Modify allocation',{allocation:a,hardware:h},[field('quantity','New allocated total',a.quantity,'number')],v=>mutate('AllocateHardware',{...v,hardware_id:a.hardware_id,project_id:a.project_id,quantity:Number(v.quantity),expected_version:h.version}));})]:[]))]);pager(data);return;
+    table(['Project ID','Hardware ID','Allocated','Out','Actions'],data.items,a=>[a.project_id,a.hardware_id,a.quantity,a.out,actions(button('Audit',()=>auditFor(a.hardware_id,a.project_id)),...(writable?[button('Check out',()=>checkoutEditor({hardware_id:a.hardware_id,project_id:a.project_id})),button('Modify',async()=>{const h=await api('GetHardware',{hardware_id:a.hardware_id});openEditor('Modify allocation',{allocation:a,hardware:h},[field('quantity','New allocated total',a.quantity,'number')],v=>mutate('AllocateHardware',{...v,hardware_id:a.hardware_id,project_id:a.project_id,quantity:Number(v.quantity),expected_version:h.version}));})]:[]))]);pager(data);return;
   }
   if(screen==='checkouts') {
     searchToolbar([['project_id','Project ID'],['hardware_id','Hardware ID'],['user_id','Borrower ID'],['outstanding','Show','select',['true','false']]]);
-    $('screen').append(node('p','Checkout creation belongs to the integrating service. Administrators can process returns and correct recorded return quantities here. Set Show=false to include fully returned checkouts.'));
+    $('screen').append(node('p','Administrators can check out reserved stock, process returns and correct recorded return quantities here. A checkout needs stock already allocated to the project. Set Show=false to include fully returned checkouts.'));
+    if(writable) $('screen').append(button('Check out stock',()=>checkoutEditor()));
     const data=await api('ListCheckouts',listArgs());
     table(['Checkout / hardware ID','Project / borrower ID','Quantity / returned','Actions'],data.items,c=>[c.id+' / '+c.hardware_id,c.project_id+' / '+c.user_id,`${c.quantity} / ${c.returned}`,actions(button('Audit',()=>auditFor(c.hardware_id,c.project_id)),...(writable?[button('Return',()=>openEditor('Process partial or full return',c,[field('quantity','Quantity to return',c.outstanding,'number')],v=>mutate('ReturnCheckout',{...v,checkout_id:c.id,quantity:Number(v.quantity),expected_version:c.version}))),button('Correct return',()=>openEditor('Correct cumulative returned quantity',c,[field('returned','Correct cumulative quantity returned',c.returned,'number')],v=>mutate('CorrectCheckout',{...v,checkout_id:c.id,returned:Number(v.returned),expected_version:c.version,confirmed:true})))]:[]))]);pager(data);return;
   }

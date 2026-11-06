@@ -79,3 +79,55 @@ def test_native_grpc_client_reaches_the_container():
             assert e.code() == grpc.StatusCode.UNAUTHENTICATED
         ready = rpc.OpsServiceStub(channel).Ready(pb.ReadyRequest(), timeout=30)
         assert ready.status == 'ready'
+
+
+def test_admin_can_check_out_and_return_from_the_ui():
+    """An admin checks out reserved stock from the Checkout management screen, then returns part of it."""
+    base = os.environ.get('TEST_BASE_URL', 'http://localhost:8080')
+    code = Path(os.environ['DEV_LOGIN_CODE_FILE']).read_text().strip()
+    team = Path(os.environ['TEAM_CODE_HARDWARE_ADMIN_FILE']).read_text().strip()
+    credentials = 'Basic ' + base64.b64encode(f'hardware-admin:{team}'.encode()).decode()
+    metadata = (('authorization', credentials),)
+    tag = 'CO-' + uuid4().hex[:8]
+    with grpc.insecure_channel(os.environ.get('TEST_GRPC_TARGET', 'api:50051')) as channel:
+        stub = rpc.HardwareServiceStub(channel)
+        pool = stub.CreateHardware(pb.CreateHardwareRequest(
+            name=tag, category='Testing', asset_tag=tag, total=5, reason='Checkout UI test',
+            request_id='e2e-create-' + tag), metadata=metadata, timeout=30)
+        stub.AllocateHardware(pb.AllocateHardwareRequest(
+            hardware_id=pool.id, project_id='proj-' + tag, quantity=3, reason='Checkout UI test',
+            request_id='e2e-alloc-' + tag), metadata=metadata, timeout=30)
+    with sync_playwright() as p:
+        browser = p.chromium.launch(args=['--no-sandbox'])
+        page = browser.new_page(viewport={'width': 1100, 'height': 800})
+        page.on('dialog', lambda dialog: dialog.accept())
+        page.goto(base + '/?local=1')
+        page.get_by_label('Local development code').fill(code)
+        page.get_by_role('button', name='Sign in locally').click()
+        page.get_by_role('button', name='Hardware', exact=True).click()
+        page.get_by_label('Hardware ID (exact)').fill(pool.id)
+        page.get_by_role('button', name='Search / filter').click()
+        expect(page.locator('tr').filter(has_text=tag)).to_have_count(1)
+        page.get_by_label('Hardware ID (exact)').fill('does-not-exist')
+        page.get_by_role('button', name='Search / filter').click()
+        expect(page.get_by_text('No matching records.')).to_be_visible()
+        page.get_by_role('button', name='Checkout management').click()
+        page.get_by_role('button', name='Check out stock', exact=True).click()
+        dialog = page.get_by_role('dialog')
+        dialog.get_by_label('Hardware ID').fill(pool.id)
+        dialog.get_by_label('External project ID').fill('proj-' + tag)
+        dialog.get_by_label('Borrower ID').fill('student-1')
+        dialog.get_by_label('Quantity to check out').fill('2')
+        dialog.get_by_label('Reason (required)').fill('Lab session')
+        dialog.get_by_role('button', name='Review and confirm').click()
+        expect(dialog).not_to_be_visible()
+        row = page.locator('tr').filter(has_text='proj-' + tag)
+        expect(row).to_have_count(1)
+        expect(row.locator('td').nth(2)).to_have_text('2 / 0')
+        row.get_by_role('button', name='Return').first.click()
+        dialog.get_by_label('Quantity to return').fill('1')
+        dialog.get_by_label('Reason (required)').fill('Returned after lab')
+        dialog.get_by_role('button', name='Review and confirm').click()
+        expect(dialog).not_to_be_visible()
+        expect(row.locator('td').nth(2)).to_have_text('2 / 1')
+        browser.close()
