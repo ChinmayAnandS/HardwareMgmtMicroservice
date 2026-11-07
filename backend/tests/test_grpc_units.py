@@ -166,3 +166,73 @@ def test_audit_conversion_keeps_null_project_unset_and_snapshots_as_structs():
 def test_vendor_rows_accept_decimals_and_missing_columns():
     row = convert.to_pb(pb.VendorAlternative, {'vendor': 'Dell', 'quantity': 42, 'unit_price': Decimal('1250.50')})
     assert row.vendor == 'Dell' and row.unit_price == 1250.5 and not row.HasField('monthly_charges')
+
+
+class LoggedContext(Context):
+    def abort(self, code, message):
+        raise RuntimeError(f'aborted {code.name}: {message}')
+
+
+class FakeAuth:
+    def __init__(self, actor=None, error=None):
+        self.actor, self.error = actor, error
+
+    def authenticate(self, context, method):
+        if self.error:
+            raise self.error
+        return self.actor
+
+
+def servicer(auth, behaviour):
+    from app.service import guarded
+
+    class Servicer:
+        def __init__(self):
+            self.auth = auth
+
+        @guarded()
+        def Probe(self, request, context, actor):
+            return behaviour()
+
+    return Servicer()
+
+
+def test_each_call_logs_one_line_with_actor_status_and_request_id(caplog):
+    import logging
+    secret = 'Basic aGFyZHdhcmUtYWRtaW46dG9wLXNlY3JldC1jb2Rl'
+    context = LoggedContext(('authorization', secret))
+    request = SimpleNamespace(request_id='REQ-1')
+    with caplog.at_level(logging.INFO, logger='hardware'):
+        assert servicer(FakeAuth('team:projects-team'), lambda: 'ok').Probe(request, context) == 'ok'
+    [line] = [r for r in caplog.records if r.name == 'hardware']
+    text = line.getMessage()
+    assert line.levelno == logging.INFO
+    assert 'rpc=Probe' in text and 'actor=team:projects-team' in text and 'status=OK' in text
+    assert "request_id='REQ-1'" in text and 'peer=10.0.0.5' in text and ' ms=' in text
+    assert secret not in text and 'aGFyZHdhcmUt' not in text
+
+
+def test_failures_log_the_status_and_reason_but_never_forge_extra_lines(caplog):
+    import logging
+    context = LoggedContext(('authorization', 'Basic c2VjcmV0'))
+    hostile = Conflict('Team evil\nrpc=Fake actor=admin status=OK is not allowed', 'PERMISSION_DENIED')
+    with caplog.at_level(logging.INFO, logger='hardware'):
+        with pytest.raises(RuntimeError, match='aborted PERMISSION_DENIED'):
+            servicer(FakeAuth(error=hostile), lambda: None).Probe(SimpleNamespace(request_id=''), context)
+    [line] = [r for r in caplog.records if r.name == 'hardware']
+    text = line.getMessage()
+    assert line.levelno == logging.WARNING
+    assert 'status=PERMISSION_DENIED' in text and 'actor=-' in text
+    assert '\n' not in text and 'c2VjcmV0' not in text
+
+
+def test_server_side_failures_log_at_error_level(caplog):
+    import logging
+
+    def boom():
+        raise ValueError('kaboom')
+    with caplog.at_level(logging.INFO, logger='hardware'):
+        with pytest.raises(RuntimeError, match='aborted INTERNAL'):
+            servicer(FakeAuth('team:front-end'), boom).Probe(SimpleNamespace(request_id=''), LoggedContext())
+    rpc_lines = [r for r in caplog.records if r.name == 'hardware' and 'rpc=Probe' in r.getMessage()]
+    assert rpc_lines and rpc_lines[0].levelno == logging.ERROR and 'status=INTERNAL' in rpc_lines[0].getMessage()

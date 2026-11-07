@@ -12,6 +12,18 @@ static_resources:
           "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
           stat_prefix: grpc_web
           codec_type: AUTO
+          # One line per request on stdout (the container log). No headers or bodies are logged, so
+          # credentials never appear. Readiness probes (/ready) are left out to keep the log readable.
+          access_log:
+          - name: envoy.access_loggers.stdout
+            filter:
+              header_filter:
+                header: {name: ":path", string_match: {exact: "/ready"}, invert_match: true}
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+              log_format:
+                text_format_source:
+                  inline_string: "[access] %START_TIME% %REQ(:METHOD)% %REQ(:PATH)% http=%RESPONSE_CODE% grpc_error=%RESP(GRPC-STATUS)% flags=%RESPONSE_FLAGS% details=%RESPONSE_CODE_DETAILS% ms=%DURATION% rx=%BYTES_RECEIVED% tx=%BYTES_SENT% upstream=%UPSTREAM_HOST% xff=\"%REQ(X-FORWARDED-FOR)%\"\n"
           route_config:
             name: hardware
             virtual_hosts:

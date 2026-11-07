@@ -4,6 +4,7 @@ import functools
 import logging
 import re
 import secrets
+import time
 from datetime import timezone
 import grpc
 from google.protobuf.timestamp_pb2 import Timestamp
@@ -11,7 +12,7 @@ from pydantic import ValidationError
 from pymongo.errors import PyMongoError
 from hardware.v1 import hardware_pb2 as pb, hardware_pb2_grpc as rpc
 from . import convert, models
-from .auth import REQUEST_NUMBER, check_team_code, metadata
+from .auth import REQUEST_NUMBER, check_team_code, client_ip, metadata
 from .domain import Conflict
 from .store import clean
 from .teams import HARDWARE_SERVICE
@@ -52,15 +53,32 @@ def request_number(context, data):
 
 
 def guarded(authenticated=True):
-    """Authenticate, then turn the service's errors into gRPC status codes."""
+    """Authenticate, turn the service's errors into gRPC status codes, and log one line per call.
+
+    The log line holds the RPC name, caller label, address, request number, status and duration. It never
+    holds the authorization header, team codes, tokens or message bodies; text that came from the caller is
+    written with repr() so it cannot forge extra log lines."""
     def decorate(fn):
         @functools.wraps(fn)
         def handler(self, request, context):
+            started, actor = time.monotonic(), '-'
+
+            def finish(code, detail=''):
+                level = logging.ERROR if code in (grpc.StatusCode.INTERNAL, grpc.StatusCode.UNAVAILABLE)                     else logging.INFO if code == grpc.StatusCode.OK else logging.WARNING
+                request_id = getattr(request, 'request_id', '')
+                log.log(level, 'rpc=%s actor=%s peer=%s status=%s ms=%d%s%s', fn.__name__, actor,
+                        client_ip(context, 'production'), code.name, (time.monotonic() - started) * 1000,
+                        f' request_id={request_id!r}' if request_id else '',
+                        f' detail={detail[:200]!r}' if detail else '')
+
             try:
                 if authenticated:
                     actor = self.auth.authenticate(context, f'/{HARDWARE_SERVICE}/{fn.__name__}')
-                    return fn(self, request, context, actor)
-                return fn(self, request, context)
+                    result = fn(self, request, context, actor)
+                else:
+                    result = fn(self, request, context)
+                finish(grpc.StatusCode.OK)
+                return result
             except Conflict as e:
                 code, message = getattr(grpc.StatusCode, e.code), str(e)
             except PyMongoError as e:
@@ -69,6 +87,7 @@ def guarded(authenticated=True):
             except Exception:
                 log.exception('Unhandled error in %s', fn.__name__)
                 code, message = grpc.StatusCode.INTERNAL, 'Internal error'
+            finish(code, message)
             context.abort(code, message)
         return handler
     return decorate
