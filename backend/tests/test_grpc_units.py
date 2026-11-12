@@ -236,3 +236,18 @@ def test_server_side_failures_log_at_error_level(caplog):
             servicer(FakeAuth('team:front-end'), boom).Probe(SimpleNamespace(request_id=''), LoggedContext())
     rpc_lines = [r for r in caplog.records if r.name == 'hardware' and 'rpc=Probe' in r.getMessage()]
     assert rpc_lines and rpc_lines[0].levelno == logging.ERROR and 'status=INTERNAL' in rpc_lines[0].getMessage()
+
+
+def test_sql_table_accepts_schema_qualified_views_and_rejects_injection():
+    from app.sql_store import qualified_table
+    assert qualified_table('unified_procurement') == '[dbo].[unified_procurement]'
+    assert qualified_table('report.v_hardware_reference') == '[report].[v_hardware_reference]'
+    for bad in ('a.b.c', 'x; DROP TABLE y', 'report.', '.v', 'a b', ''):
+        with pytest.raises(RuntimeError):
+            qualified_table(bad)
+
+
+def test_odbc_values_are_brace_quoted():
+    from app.sql_store import odbc_value
+    assert odbc_value('plain') == '{plain}'
+    assert odbc_value('pa;ss=wo{rd}') == '{pa;ss=wo{rd}}}'

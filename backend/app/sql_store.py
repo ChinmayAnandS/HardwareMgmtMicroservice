@@ -7,6 +7,19 @@ from typing import Any
 log = logging.getLogger('hardware.sql')
 
 
+def qualified_table(name: str) -> str:
+    """`table` (in dbo) or `schema.table`, each part a plain identifier; returned bracket-quoted."""
+    parts = name.split('.')
+    if len(parts) > 2 or not all(part and part.replace('_', '').isalnum() for part in parts):
+        raise RuntimeError('AZURE_SQL_TABLE must be a table or view name, optionally schema-qualified (schema.name)')
+    return '.'.join(f'[{part}]' for part in (parts if len(parts) == 2 else ['dbo', *parts]))
+
+
+def odbc_value(value: str) -> str:
+    """Brace-quote a connection-string value so `;`, `=` and `{` in a password cannot split it."""
+    return '{' + value.replace('}', '}}') + '}'
+
+
 class AzureSqlStore:
     def __init__(self, settings):
         self.settings = settings
@@ -34,25 +47,24 @@ class AzureSqlStore:
             import pyodbc
         except ImportError as exc:
             raise RuntimeError('pyodbc is required for Azure SQL lookups') from exc
-        # The table name is configuration-only and validated as a simple identifier.
-        table = self.settings.azure_sql_table
-        if not table.replace('_', '').isalnum():
-            raise RuntimeError('AZURE_SQL_TABLE must be a simple table name')
+        # The table or view name is configuration-only and validated as plain identifiers.
+        table = qualified_table(self.settings.azure_sql_table)
         connection_string = (
             f'DRIVER={{{self.settings.azure_sql_driver}}};'
             f'SERVER={self.settings.azure_sql_server};DATABASE={self.settings.azure_sql_database};'
-            f'UID={self.settings.azure_sql_user};PWD={self.settings.azure_sql_password};'
+            f'UID={odbc_value(self.settings.azure_sql_user)};PWD={odbc_value(self.settings.azure_sql_password)};'
             'Encrypt=yes;TrustServerCertificate=no;Connection Timeout=10;'
         )
         search = f'%{name}%'
+        commodity_search = f'%{category}%'
         category_search = f'%{category or name}%'
         query = f'''SELECT TOP (?) source_unit, vendor, commodity, department, business_line,
                     quantity, unit_price, payment_amount, monthly_charges, category
-                    FROM dbo.{table}
-                    WHERE commodity LIKE ? OR business_line LIKE ? OR category LIKE ? OR vendor LIKE ?
+                    FROM {table}
+                    WHERE commodity LIKE ? OR business_line LIKE ? OR category LIKE ? OR vendor LIKE ? OR commodity LIKE ?
                     ORDER BY vendor'''
         with pyodbc.connect(connection_string, timeout=10) as connection:
             cursor = connection.cursor()
-            cursor.execute(query, limit, search, search, category_search, search)
+            cursor.execute(query, limit, search, search, category_search, search, commodity_search)
             columns = [column[0] for column in cursor.description]
             return [dict(zip(columns, row)) for row in cursor.fetchall()]
