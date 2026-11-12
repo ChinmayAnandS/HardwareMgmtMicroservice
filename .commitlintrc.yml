@@ -1,0 +1,8 @@
+# Conventional Commits, enforced in CI (.github/workflows/ci.yml): "type(scope): Subject".
+# The structure is what release tooling reads, so the type stays lowercase and required.
+# Capitalisation anywhere after the type is free: "feat: Add gRPC health check", "fix(api): Handle UNAVAILABLE".
+extends:
+  - '@commitlint/config-conventional'
+rules:
+  subject-case: [0]
+  header-max-length: [2, always, 100]
