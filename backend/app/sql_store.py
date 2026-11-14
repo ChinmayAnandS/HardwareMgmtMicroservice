@@ -61,10 +61,10 @@ class AzureSqlStore:
         query = f'''SELECT TOP (?) source_unit, vendor, commodity, department, business_line,
                     quantity, unit_price, payment_amount, monthly_charges, category
                     FROM {table}
-                    WHERE commodity LIKE ? OR business_line LIKE ? OR category LIKE ? OR vendor LIKE ? OR commodity LIKE ?
-                    ORDER BY vendor'''
+                    WHERE commodity LIKE ? OR business_line LIKE ? OR category LIKE ? OR vendor LIKE ?
+                    AND quantity >= 1'''
         with pyodbc.connect(connection_string, timeout=10) as connection:
             cursor = connection.cursor()
-            cursor.execute(query, limit, search, search, category_search, search, commodity_search)
+            cursor.execute(query, limit, commodity_search, search, category_search, search)
             columns = [column[0] for column in cursor.description]
             return [dict(zip(columns, row)) for row in cursor.fetchall()]
