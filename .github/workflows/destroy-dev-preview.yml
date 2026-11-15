@@ -1,0 +1,58 @@
+# Removes a dev preview that deploy-dev left running (run it with keep=true), or one a crashed run
+# never cleaned up. Give it the run id printed in that run's summary (for example r123456781).
+name: destroy-dev-preview
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Preview run id, e.g. r123456781
+        required: true
+permissions:
+  contents: read
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RUN_ID: ${{ inputs.run_id }}
+      MONGO_DATABASE: hw_${{ inputs.run_id }}
+      # Destroy only needs the identity of the resources; the values below are never used.
+      TF_VAR_subscription_id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_run_id: ${{ inputs.run_id }}
+      TF_VAR_api_image: unused
+      TF_VAR_web_image: unused
+      TF_VAR_mongo_uri: ${{ secrets.ATLAS_DEV_MONGO_URI }}
+      TF_VAR_mongo_database: hw_${{ inputs.run_id }}
+      TF_VAR_hardware_admin_code: unused-unused-unused
+      TF_VAR_dev_login_code: unused-unused-unused
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+      - name: Terraform destroy
+        working-directory: infra/terraform/stacks/dev-preview
+        run: |
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ vars.TF_STATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
+            -backend-config="key=preview/$RUN_ID.tfstate" \
+            -backend-config="use_azuread_auth=true"
+          terraform destroy -auto-approve -input=false
+      - name: Drop the preview database and its state file
+        run: |
+          docker run --rm -e MONGO_DATABASE mongo:8.0 mongosh --quiet "$TF_VAR_mongo_uri" \
+            --eval 'db.getSiblingDB(process.env.MONGO_DATABASE).dropDatabase()'
+          az storage blob delete --auth-mode login --account-name "${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
+            --container-name "${{ vars.TF_STATE_CONTAINER }}" --name "preview/$RUN_ID.tfstate" || true

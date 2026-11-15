@@ -1,0 +1,179 @@
+# Push to dev: build both images, deploy a throwaway copy of the whole stack (API + website, own
+# database) to the dev Azure Container Apps environment with Terraform, run the end-to-end tests
+# against the real URLs, then tear it all down. Needs the GitHub Environment "dev" (see
+# infra/terraform/README.md for the variables and secrets).
+name: deploy-dev
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+    inputs:
+      keep:
+        description: Leave the preview running afterwards (remove it later with destroy-dev-preview)
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: deploy-dev-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      api_image: ${{ steps.refs.outputs.api }}
+      web_image: ${{ steps.refs.outputs.web }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Image name (lowercase)
+        id: name
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push the gRPC API image
+        id: api
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.azure
+          push: true
+          tags: |
+            ${{ steps.name.outputs.image }}:latest
+            ${{ steps.name.outputs.image }}:${{ github.sha }}
+      - name: Build and push the website image
+        id: web
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: web/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.name.outputs.image }}-web:latest
+            ${{ steps.name.outputs.image }}-web:${{ github.sha }}
+      - name: Pin both images by digest
+        id: refs
+        run: |
+          echo "api=${{ steps.name.outputs.image }}@${{ steps.api.outputs.digest }}" >> "$GITHUB_OUTPUT"
+          echo "web=${{ steps.name.outputs.image }}-web@${{ steps.web.outputs.digest }}" >> "$GITHUB_OUTPUT"
+
+  preview:
+    needs: images
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TF_DIR: infra/terraform/stacks/dev-preview
+      TF_VAR_subscription_id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_api_image: ${{ needs.images.outputs.api_image }}
+      TF_VAR_web_image: ${{ needs.images.outputs.web_image }}
+      TF_VAR_mongo_uri: ${{ secrets.ATLAS_DEV_MONGO_URI }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+
+      - name: Name this preview and generate its throwaway credentials
+        run: |
+          run_id="r${GITHUB_RUN_ID: -8}${GITHUB_RUN_ATTEMPT}"
+          admin=$(openssl rand -hex 16)
+          dev=$(openssl rand -hex 16)
+          echo "::add-mask::$admin"
+          echo "::add-mask::$dev"
+          umask 077
+          printf '%s' "$admin" > "$RUNNER_TEMP/team-hardware-admin"
+          printf '%s' "$dev" > "$RUNNER_TEMP/dev-login"
+          {
+            echo "RUN_ID=$run_id"
+            echo "TF_VAR_run_id=$run_id"
+            echo "TF_VAR_mongo_database=hw_$run_id"
+            echo "MONGO_DATABASE=hw_$run_id"
+            echo "TF_VAR_hardware_admin_code=$admin"
+            echo "TF_VAR_dev_login_code=$dev"
+          } >> "$GITHUB_ENV"
+
+      - name: Create this preview's database (collections, indexes, validators)
+        run: |
+          docker run --rm -e MONGO_DATABASE -v "$PWD/scripts:/scripts:ro" mongo:8.0 \
+            mongosh --quiet "$TF_VAR_mongo_uri" --file /scripts/apply-schema.js
+
+      - name: Terraform apply
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ vars.TF_STATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
+            -backend-config="key=preview/$RUN_ID.tfstate" \
+            -backend-config="use_azuread_auth=true"
+          terraform apply -auto-approve -input=false
+          echo "WEB_URL=$(terraform output -raw web_url)" >> "$GITHUB_ENV"
+          echo "API_HOST=$(terraform output -raw api_fqdn)" >> "$GITHUB_ENV"
+
+      - name: Wait until the website reports the API is reachable
+        run: curl --fail --silent --show-error --retry 24 --retry-delay 5 --retry-all-errors "$WEB_URL/ready"
+
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12', cache: pip, cache-dependency-path: backend/requirements-dev.txt}
+      - name: Install the test tooling
+        run: |
+          pip install -r backend/requirements-dev.txt
+          python scripts/generate-proto.py
+          playwright install --with-deps chromium
+      - name: End-to-end tests against the deployed stack
+        env:
+          PYTHONPATH: backend
+          TEST_BASE_URL: ${{ env.WEB_URL }}
+          TEST_GRPC_TARGET: ${{ env.API_HOST }}:443
+          TEST_GRPC_TLS: '1'
+          DEV_LOGIN_CODE_FILE: ${{ runner.temp }}/dev-login
+          TEAM_CODE_HARDWARE_ADMIN_FILE: ${{ runner.temp }}/team-hardware-admin
+        run: python -m pytest e2e -v
+
+      - name: Preview details
+        if: always()
+        run: |
+          {
+            echo "### Dev preview \`$RUN_ID\`"
+            echo "- Website: ${WEB_URL:-not deployed}"
+            echo "- gRPC API: \`${API_HOST:-not deployed}:443\`"
+            echo "- API image: \`$TF_VAR_api_image\`"
+            echo "- Website image: \`$TF_VAR_web_image\`"
+            if [ "${{ inputs.keep }}" = "true" ]; then
+              echo "- Left running. Remove it with the destroy-dev-preview workflow, run id \`$RUN_ID\`."
+            else
+              echo "- Torn down at the end of this run."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Tear down the preview
+        if: always() && inputs.keep != true
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ vars.TF_STATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
+            -backend-config="key=preview/$RUN_ID.tfstate" \
+            -backend-config="use_azuread_auth=true"
+          terraform destroy -auto-approve -input=false
+          docker run --rm -e MONGO_DATABASE mongo:8.0 mongosh --quiet "$TF_VAR_mongo_uri" \
+            --eval 'db.getSiblingDB(process.env.MONGO_DATABASE).dropDatabase()'
+          az storage blob delete --auth-mode login --account-name "${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
+            --container-name "${{ vars.TF_STATE_CONTAINER }}" --name "preview/$RUN_ID.tfstate" || true

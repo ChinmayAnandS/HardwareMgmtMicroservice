@@ -10,6 +10,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 from hardware.v1 import hardware_pb2 as pb, hardware_pb2_grpc as rpc  # noqa: E402
 
 
+def grpc_channel():
+    """The API under test: plaintext inside Compose, TLS (TEST_GRPC_TLS=1) against a deployed app."""
+    target = os.environ.get('TEST_GRPC_TARGET', 'api:50051')
+    if os.environ.get('TEST_GRPC_TLS') == '1':
+        return grpc.secure_channel(target, grpc.ssl_channel_credentials())
+    return grpc.insecure_channel(target)
+
+
 def test_admin_ui_grpc_web_roundtrip():
     """Browser -> Nginx -> Envoy (gRPC-Web) -> gRPC API -> MongoDB, driven through the real UI."""
     base = os.environ.get('TEST_BASE_URL', 'http://localhost:8080')
@@ -62,7 +70,7 @@ def test_native_grpc_client_reaches_the_container():
     """What other teams do: a plain gRPC client with team credentials against the published port."""
     team = Path(os.environ['TEAM_CODE_HARDWARE_ADMIN_FILE']).read_text().strip()
     credentials = 'Basic ' + base64.b64encode(f'hardware-admin:{team}'.encode()).decode()
-    with grpc.insecure_channel(os.environ.get('TEST_GRPC_TARGET', 'api:50051')) as channel:
+    with grpc_channel() as channel:
         stub = rpc.HardwareServiceStub(channel)
         metadata = (('authorization', credentials),)
         tag = 'GRPC-' + uuid4().hex[:8]
@@ -89,7 +97,7 @@ def test_admin_can_check_out_and_return_from_the_ui():
     credentials = 'Basic ' + base64.b64encode(f'hardware-admin:{team}'.encode()).decode()
     metadata = (('authorization', credentials),)
     tag = 'CO-' + uuid4().hex[:8]
-    with grpc.insecure_channel(os.environ.get('TEST_GRPC_TARGET', 'api:50051')) as channel:
+    with grpc_channel() as channel:
         stub = rpc.HardwareServiceStub(channel)
         pool = stub.CreateHardware(pb.CreateHardwareRequest(
             name=tag, category='Testing', asset_tag=tag, total=5, reason='Checkout UI test',
