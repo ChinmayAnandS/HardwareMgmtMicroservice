@@ -4,11 +4,20 @@
 # Creates the remote-state storage account, the dev resource group, and a GitHub OIDC identity
 # (no stored secrets) scoped to the dev resource group and the state account. Safe to re-run.
 set -euo pipefail
+# Git Bash on Windows rewrites arguments that start with '/' (like --scope /subscriptions/...) into file paths.
+export MSYS_NO_PATHCONV=1
 region=${1:?Usage: bash infra/terraform/bootstrap.sh azure-region owner/repository}
 repo=${2:?GitHub owner/repository required}
-az account show -o none
-subscription=$(az account show --query id -o tsv)
+subscription=$(az account show --query id -o tsv 2>/dev/null || true)
+if [[ -z $subscription ]]; then
+  echo "No active Azure subscription. Run 'az login --tenant <tenant>' and 'az account set --subscription <id>' first;" >&2
+  echo "'az account list -o table' shows what you can use." >&2
+  exit 1
+fi
 tenant=$(az account show --query tenantId -o tsv)
+echo "Using subscription: $(az account show --query name -o tsv) ($subscription)"
+read -r -p "Continue? [y/N] " answer
+[[ $answer == [yY]* ]] || exit 1
 for provider in Microsoft.App Microsoft.OperationalInsights Microsoft.Insights Microsoft.Storage; do
   az provider register --namespace "$provider" --wait -o none
 done
