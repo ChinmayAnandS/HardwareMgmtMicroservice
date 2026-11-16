@@ -72,3 +72,17 @@ jobs:
       - name: Lint the pushed commit
         if: github.event_name != 'pull_request'
         run: npx commitlint --last --verbose
+  branch-flow:
+    # Work reaches main only by way of dev, so what runs in prod has already been tried in the dev preview.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - env:
+          BASE: ${{ github.base_ref }}
+          HEAD: ${{ github.head_ref }}
+        run: |
+          if [ "$BASE" = main ] && [ "$HEAD" != dev ]; then
+            echo "Pull requests into main must come from the dev branch (this one comes from $HEAD)."
+            exit 1
+          fi

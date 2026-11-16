@@ -2,6 +2,8 @@
 
 A gRPC hardware service and a responsive, dependency-free browser administration UI. This repository owns hardware pools, project reservations, checkouts, returns and immutable application audit events. Project names, schedules, membership and onboarding remain in the project service. The contract is [`proto/hardware/v1/hardware.proto`](proto/hardware/v1/hardware.proto); there is no REST API.
 
+> **Contributing?** Read [docs/BRANCHING.md](docs/BRANCHING.md) for the branch and pull-request workflow.
+
 ## Architecture and choices
 
 ```mermaid

@@ -31,6 +31,12 @@ Prod (`stacks/prod`) is not here yet: it will adopt the existing production envi
    - secret `ATLAS_DEV_MONGO_URI`: an SRV URI **without a database name** for a dev-only Atlas
      user that has `readWriteAnyDatabase` and `dbAdminAnyDatabase` (each preview gets its own
      database, `hw_<run id>`). Never reuse the production user or cluster.
+   - secret `DEV_PREVIEW_ADMIN_CODE`: the `hardware-admin` team code for previews (16+ characters).
+   - secret `DEV_PREVIEW_LOGIN_CODE`: the website dev sign-in code for previews (16+ characters).
+   Fixed codes (instead of random ones) let you sign in during the manual-testing window without
+   printing credentials into the logs, which anyone can read because the repository is public.
+   Also set the Environment's *Deployment branches* to `dev` only: the Azure identity trusts
+   anything that runs in this Environment.
 4. Atlas dev project: allow `0.0.0.0/0` in the IP access list. GitHub runners and Container
    Apps have no fixed addresses. This is acceptable for a throwaway dev cluster only.
 5. Make the two GHCR packages public (`<repo>` and `<repo>-web`), or the apps cannot pull them.
@@ -40,9 +46,11 @@ Prod (`stacks/prod`) is not here yet: it will adopt the existing production envi
 `deploy-dev.yml` builds both images and pins them by digest, creates the database, applies
 `stacks/dev-preview` under a state key of its own (`preview/<run id>.tfstate`), waits for
 `/ready`, runs `pytest e2e` against the real URLs (browser through gRPC-Web, and native gRPC
-over TLS), then destroys the apps, drops the database and deletes the state file.
-Run it by hand with `keep` ticked to leave a preview up, and remove it later with
-`destroy-dev-preview` (the run id is in the run summary).
+over TLS), keeps the preview up for `hold_minutes` (default 10) so you can test by hand, then
+destroys the apps, drops the database and deletes the state file. Cancelling the run during the
+hold tears it down at once. Run it by hand with `keep` ticked to leave a preview up, and remove
+it later with `destroy-dev-preview` (the run id is in the run summary).
 
 The previews run `ENVIRONMENT=test` so the browser dev sign-in used by the tests works. The
-dev sign-in code is random per run and the URLs are public for a few minutes only.
+dev sign-in code is the `DEV_PREVIEW_LOGIN_CODE` secret, and the preview URLs are public for a few
+minutes only, so keep that code long and private.

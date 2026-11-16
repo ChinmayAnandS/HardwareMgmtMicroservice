@@ -1,6 +1,6 @@
 # Push to dev: build both images, deploy a throwaway copy of the whole stack (API + website, own
 # database) to the dev Azure Container Apps environment with Terraform, run the end-to-end tests
-# against the real URLs, then tear it all down. Needs the GitHub Environment "dev" (see
+# against the real URLs, keep it up for a while so you can test by hand, then tear it all down. Needs the GitHub Environment "dev" (see
 # infra/terraform/README.md for the variables and secrets).
 name: deploy-dev
 on:
@@ -8,8 +8,12 @@ on:
     branches: [dev]
   workflow_dispatch:
     inputs:
+      hold_minutes:
+        description: Minutes to keep the preview up after the tests, for manual testing (0 to tear down at once)
+        type: string
+        default: '10'
       keep:
-        description: Leave the preview running afterwards (remove it later with destroy-dev-preview)
+        description: Leave the preview running until you remove it with destroy-dev-preview
         type: boolean
         default: false
 permissions:
@@ -66,7 +70,7 @@ jobs:
   preview:
     needs: images
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 90
     environment: dev
     permissions:
       contents: read
@@ -89,23 +93,22 @@ jobs:
           terraform_version: 1.9.8
           terraform_wrapper: false
 
-      - name: Name this preview and generate its throwaway credentials
+      - name: Name this preview and load its sign-in codes
+        env:
+          ADMIN_CODE: ${{ secrets.DEV_PREVIEW_ADMIN_CODE }}
+          LOGIN_CODE: ${{ secrets.DEV_PREVIEW_LOGIN_CODE }}
         run: |
           run_id="r${GITHUB_RUN_ID: -8}${GITHUB_RUN_ATTEMPT}"
-          admin=$(openssl rand -hex 16)
-          dev=$(openssl rand -hex 16)
-          echo "::add-mask::$admin"
-          echo "::add-mask::$dev"
           umask 077
-          printf '%s' "$admin" > "$RUNNER_TEMP/team-hardware-admin"
-          printf '%s' "$dev" > "$RUNNER_TEMP/dev-login"
+          printf '%s' "$ADMIN_CODE" > "$RUNNER_TEMP/team-hardware-admin"
+          printf '%s' "$LOGIN_CODE" > "$RUNNER_TEMP/dev-login"
           {
             echo "RUN_ID=$run_id"
             echo "TF_VAR_run_id=$run_id"
             echo "TF_VAR_mongo_database=hw_$run_id"
             echo "MONGO_DATABASE=hw_$run_id"
-            echo "TF_VAR_hardware_admin_code=$admin"
-            echo "TF_VAR_dev_login_code=$dev"
+            echo "TF_VAR_hardware_admin_code=$ADMIN_CODE"
+            echo "TF_VAR_dev_login_code=$LOGIN_CODE"
           } >> "$GITHUB_ENV"
 
       - name: Create this preview's database (collections, indexes, validators)
@@ -148,7 +151,10 @@ jobs:
 
       - name: Preview details
         if: always()
+        env:
+          HOLD: ${{ inputs.hold_minutes }}
         run: |
+          echo "Preview $RUN_ID: website ${WEB_URL:-not deployed}, gRPC ${API_HOST:-not deployed}:443"
           {
             echo "### Dev preview \`$RUN_ID\`"
             echo "- Website: ${WEB_URL:-not deployed}"
@@ -158,9 +164,21 @@ jobs:
             if [ "${{ inputs.keep }}" = "true" ]; then
               echo "- Left running. Remove it with the destroy-dev-preview workflow, run id \`$RUN_ID\`."
             else
-              echo "- Torn down at the end of this run."
+              echo "- Stays up for ${HOLD:-10} minutes after the tests, then is torn down (cancel this run to tear it down sooner)."
             fi
+            echo "- Sign in with your DEV_PREVIEW_LOGIN_CODE (website, ?local=1) or DEV_PREVIEW_ADMIN_CODE (gRPC, team hardware-admin)."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the preview up for manual testing
+        if: always() && env.WEB_URL != '' && inputs.keep != true
+        env:
+          HOLD: ${{ inputs.hold_minutes }}
+        run: |
+          minutes="${HOLD:-10}"
+          case "$minutes" in ''|*[!0-9]*) echo "hold_minutes must be a whole number"; exit 1;; esac
+          [ "$minutes" -le 60 ] || minutes=60
+          echo "Preview is up for $minutes minutes: $WEB_URL (cancel this run to tear it down sooner)"
+          [ "$minutes" -gt 0 ] && sleep "${minutes}m" || true
 
       - name: Tear down the preview
         if: always() && inputs.keep != true
