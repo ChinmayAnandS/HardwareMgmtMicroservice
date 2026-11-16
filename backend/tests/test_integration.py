@@ -392,10 +392,10 @@ def test_projects_team_gets_a_qr_without_changing_stock(app, admin, monkeypatch)
     monkeypatch.setattr('app.service.urlopen', fake)
     qr = svc.hw.GetHardwareQr(pb.GetHardwareRequest(hardware_id=h.id))
     assert qr.hardware.id == h.id and qr.hardware.total == 5 and qr.hardware.available == 5
-    assert qr.payload.splitlines() == [
-        'hardware.v1', f'id:{h.id}', f'asset_tag:{h.asset_tag}', 'name:Laptop',
-        'description:14 inch lab laptop', 'category:Computer', 'status:active', 'serial:',
-    ]
+    assert json.loads(qr.payload) == {
+        'id': h.id, 'asset_tag': h.asset_tag, 'name': 'Laptop',
+        'description': '14 inch lab laptop', 'category': 'Computer', 'status': 'active', 'serial': '',
+    }
     assert qr.content_type == 'image/png' and qr.png.startswith(b'\x89PNG')
     assert len(calls) == 1 and h.id in calls[0]
     assert app.root_db.audit.count_documents({}) == 1

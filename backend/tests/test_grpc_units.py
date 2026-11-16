@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
+import json
 import pytest
 from google.protobuf.timestamp_pb2 import Timestamp
 from hardware.v1 import hardware_pb2 as pb
@@ -273,21 +274,19 @@ def qr_servicer():
 
 
 def test_qr_payload_carries_identity_and_leaves_out_stock():
-    payload = qr_servicer().hardware_qr_payload({
+    payload = json.loads(qr_servicer().hardware_qr_payload({
         '_id': 'pool-1', 'asset_tag': 'POOL-LAPTOP', 'name': 'Laptop', 'description': '14 inch lab laptop',
         'category': 'Computer', 'status': 'active', 'serial': 'SN-9', 'total': 5, 'out': 2, 'reserved': 3,
-    })
-    assert payload.splitlines() == [
-        'hardware.v1', 'id:pool-1', 'asset_tag:POOL-LAPTOP', 'name:Laptop', 'description:14 inch lab laptop',
-        'category:Computer', 'status:active', 'serial:SN-9',
-    ]
-    missing = qr_servicer().hardware_qr_payload({
+    }))
+    assert payload == {
+        'id': 'pool-1', 'asset_tag': 'POOL-LAPTOP', 'name': 'Laptop', 'description': '14 inch lab laptop',
+        'category': 'Computer', 'status': 'active', 'serial': 'SN-9',
+    }
+    missing = json.loads(qr_servicer().hardware_qr_payload({
         '_id': 'pool-1', 'asset_tag': 'POOL-LAPTOP', 'name': 'Laptop', 'category': 'Computer', 'status': 'active',
-    })
-    assert missing.splitlines() == [
-        'hardware.v1', 'id:pool-1', 'asset_tag:POOL-LAPTOP', 'name:Laptop', 'description:',
-        'category:Computer', 'status:active', 'serial:',
-    ]
+    }))
+    assert missing['description'] == '' and missing['serial'] == ''
+    assert 'total' not in missing
 
 
 def test_fetch_qr_png_sends_the_payload_and_returns_the_image(monkeypatch):

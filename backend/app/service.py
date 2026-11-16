@@ -1,6 +1,7 @@
 """gRPC service implementations. Business rules live in domain.py/store.py; this layer only
 authenticates, validates, calls the store and shapes the response."""
 import functools
+import json
 import logging
 import re
 import secrets
@@ -178,17 +179,17 @@ class HardwareServicer(rpc.HardwareServiceServicer):
         data = parse(HardwareId, request)
         return convert.hardware(clean(self.store.get('hardware', data.hardware_id)))
 
-    def hardware_qr_payload(self,doc):
-        return "\n".join([
-            "hardware.v1",
-            f"id:{doc['_id']}",
-            f"asset_tag:{doc['asset_tag']}",
-            f"name:{doc['name']}",
-            f"description:{doc.get('description') or ''}",
-            f"category:{doc['category']}",
-            f"status:{doc['status']}",
-            f"serial:{doc.get('serial', '')}",
-        ])
+    def hardware_qr_payload(self, doc):
+        # Identity only. Stock counts change and would make a printed code stale.
+        return json.dumps({
+            'id': doc['_id'],
+            'asset_tag': doc['asset_tag'],
+            'name': doc['name'],
+            'description': doc.get('description') or '',
+            'category': doc['category'],
+            'status': doc['status'],
+            'serial': doc.get('serial', ''),
+        }, ensure_ascii=False, separators=(',', ':'))
 
     def fetch_qr_png(self, url, payload, timeout=5):
         query = urlencode({"size":"200x200","data":payload})
