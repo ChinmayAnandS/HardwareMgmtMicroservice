@@ -197,7 +197,7 @@ class HardwareServicer(rpc.HardwareServiceServicer):
                 body = response.read()
                 content_type = response.headers.get('Content-Type')
         except URLError:
-            raise Conflict(f"QR provider unavailable", 'UNAVAILABLE') 
+            raise Conflict('QR provider unavailable', 'UNAVAILABLE')
         if not body.startswith(b'\x89PNG'):
             raise Conflict("QR code is not a PNG image", 'INTERNAL')
         return body, content_type or 'image/png'
