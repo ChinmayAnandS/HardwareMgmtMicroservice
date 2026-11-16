@@ -1,7 +1,7 @@
 'use strict';
 // The session token lives only in memory: reloading the page signs the administrator out, and nothing
 // credential-like is ever written to web storage.
-let token = '', writable = false, screen = 'dashboard', page = 1, filters = {}, busy = false;
+let token = '', writable = false, screen = 'dashboard', page = 1, filters = {}, busy = false, qrUrl = '';
 let pending = null; // Retain the identical body and request number after an uncertain network result.
 const UNCERTAIN = [4, 13, 14]; // DEADLINE_EXCEEDED, INTERNAL, UNAVAILABLE: the change may or may not have happened
 const $ = id => document.getElementById(id);
@@ -79,6 +79,16 @@ function checkoutEditor(prefill = {}) {
   return openEditor('Check out stock', prefill, [field('hardware_id','Hardware ID',prefill.hardware_id||''),field('project_id','External project ID',prefill.project_id||''),field('user_id','Borrower ID'),field('quantity','Quantity to check out',1,'number')],v=>mutate('CreateCheckout',{...v,quantity:Number(v.quantity)}));
 }
 function auditFor(hardware_id,project_id) { screen='transactions';page=1;filters={hardware_id,...(project_id?{project_id}:{})};return render(); }
+function showQr(h) {
+  return api('GetHardwareQr',{hardware_id:h.id}).then(qr=>{
+    if(qrUrl) URL.revokeObjectURL(qrUrl);
+    qrUrl=URL.createObjectURL(new Blob([qr.png],{type:qr.content_type||'image/png'}));
+    $('qr-title').textContent=h.name+' / '+h.asset_tag;
+    $('qr-image').src=qrUrl;
+    $('qr-payload').textContent=qr.payload;
+    $('qr').showModal();
+  });
+}
 async function render() {
   $('screen').replaceChildren(node('h2', {dashboard:'Inventory dashboard',hardware:'Hardware inventory',projects:'Project inventory',adjustments:'Inventory adjustments',checkouts:'Outstanding checkouts',transactions:'Immutable transaction history'}[screen]));
   if(screen==='dashboard') {
@@ -101,7 +111,7 @@ async function render() {
       catch(e) { if(e.code!==5) throw e; data={items:[],total:0,size:25}; }
     } else data=await api('ListHardware',listFilters);
     table(['Name / asset','Category / status','Total','Available / unallocated','Actions'],data.items,h=>{
-      const links=[button('Audit',()=>auditFor(h.id)),button('Allocations',()=>{screen='projects';filters={hardware_id:h.id};page=1;return render();})];
+      const links=[button('Audit',()=>auditFor(h.id)),button('Allocations',()=>{screen='projects';filters={hardware_id:h.id};page=1;return render();}),button('QR code',()=>showQr(h))];
       if(writable&&h.status!=='retired') {
         links.push(button('Edit',()=>openEditor('Edit hardware',h,[field('name','Name',h.name),field('category','Category',h.category),field('asset_tag','Asset tag',h.asset_tag),field('serial','Serial',h.serial,'text',false),field('description','Description',h.description,'text',false),select('status','Status',['active','damaged','under_maintenance'],h.status)],v=>mutate('UpdateHardware',{...v,hardware_id:h.id,expected_version:h.version}))));
         links.push(button('Adjust stock',()=>{const delta=field('delta','Change in total (negative to remove)',1,'number');delta.querySelector('input').min='-1000000';openEditor('Adjust total stock',h,[delta],v=>mutate('AdjustHardware',{...v,hardware_id:h.id,delta:Number(v.delta),expected_version:h.version,confirmed:true}));}));
@@ -136,6 +146,7 @@ async function initialize() {
   $('identity').textContent=me.name; $('signout').hidden=false;$('login').hidden=true;$('app').hidden=false;await render();
 }
 $('cancel').onclick=()=>$('editor').close();
+$('qr').addEventListener('close',()=>{if(qrUrl){URL.revokeObjectURL(qrUrl);qrUrl='';}$('qr-image').removeAttribute('src');});
 $('signout').onclick=async()=>{try{await api('Logout');location.assign('/');}catch(e){message(e.message);}};
 for(const b of document.querySelectorAll('[data-screen]'))b.onclick=()=>{screen=b.dataset.screen;page=1;filters={};render().catch(e=>message(e.message));};
 async function showSignIn(){
