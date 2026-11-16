@@ -27,6 +27,8 @@ class Settings:
     azure_sql_driver: str = os.getenv('AZURE_SQL_DRIVER', 'ODBC Driver 18 for SQL Server')
     azure_sql_table: str = os.getenv('AZURE_SQL_TABLE', 'unified_procurement')
     sql_mock_data_file: str = os.getenv('SQL_MOCK_DATA_FILE', '')
+    qr_api_url: str = os.getenv('QR_API_URL', 'https://api.qrserver.com/v1/create-qr-code/')
+
 
     def check(self):
         if not self.mongo_uri:

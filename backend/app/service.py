@@ -16,6 +16,9 @@ from .auth import REQUEST_NUMBER, check_team_code, client_ip, metadata
 from .domain import Conflict
 from .store import clean
 from .teams import HARDWARE_SERVICE
+from urllib.parse import urlencode
+from urllib.request import urlopen
+from urllib.error import URLError
 
 log = logging.getLogger('hardware')
 MAX_OFFSET = 20000
@@ -94,8 +97,8 @@ def guarded(authenticated=True):
 
 
 class HardwareServicer(rpc.HardwareServiceServicer):
-    def __init__(self, auth, store, sql_store):
-        self.auth, self.store, self.sql_store = auth, store, sql_store
+    def __init__(self, auth, store, sql_store, qr_api_url):
+        self.auth, self.store, self.sql_store, self.qr_api_url = auth, store, sql_store, qr_api_url
 
     def mutate(self, context, actor, command, entity, data, **dump):
         """Run a command once per request number and return the stored (possibly replayed) document."""
@@ -175,6 +178,43 @@ class HardwareServicer(rpc.HardwareServiceServicer):
         data = parse(HardwareId, request)
         return convert.hardware(clean(self.store.get('hardware', data.hardware_id)))
 
+    def hardware_qr_payload(self,doc):
+        return "\n".join([
+            "hardware.v1",
+            f"id:{doc['_id']}",
+            f"asset_tag:{doc['asset_tag']}",
+            f"name:{doc['name']}",
+            f"description:{doc.get('description') or ''}",
+            f"category:{doc['category']}",
+            f"status:{doc['status']}",
+            f"serial:{doc.get('serial', '')}",
+        ])
+
+    def fetch_qr_png(self, url, payload, timeout=5):
+        query = urlencode({"size":"200x200","data":payload})
+        try:
+            with urlopen(url + "?" + query, timeout=timeout) as response:
+                body = response.read()
+                content_type = response.headers.get('Content-Type')
+        except URLError:
+            raise Conflict(f"QR provider unavailable", 'UNAVAILABLE') 
+        if not body.startswith(b'\x89PNG'):
+            raise Conflict("QR code is not a PNG image", 'INTERNAL')
+        return body, content_type or 'image/png'
+
+    @guarded()
+    def GetHardwareQr(self, request, context, actor):
+        data = parse(HardwareId, request)
+        doc = clean(self.store.get('hardware', data.hardware_id))
+        payload = self.hardware_qr_payload(doc)
+        png, content_type = self.fetch_qr_png(self.qr_api_url, payload)
+        return pb.HardwareQr(
+            hardware=convert.hardware(doc),
+            payload=payload,
+            content_type=content_type,
+            png=png,
+        )
+        
     @guarded()
     def GetAvailability(self, request, context, actor):
         data = parse(HardwareId, request)

@@ -22,7 +22,7 @@ TEAMS = {
 # Operation name -> the HardwareService RPCs it covers. RPCs in no operation (CreateHardware,
 # UpdateHardware, RetireHardware, AdjustHardware, CorrectCheckout) are for 'all' teams only.
 OPERATIONS = {
-    'read': ('GetHardware', 'ListHardware', 'GetAvailability', 'ListAllocations', 'ListCheckouts',
+    'read': ('GetHardware', 'GetHardwareQr', 'ListHardware', 'GetAvailability', 'ListAllocations', 'ListCheckouts',
              'ListTransactions', 'GetSummary'),
     'allocate': ('AllocateHardware',),
     'checkout': ('CreateCheckout',),

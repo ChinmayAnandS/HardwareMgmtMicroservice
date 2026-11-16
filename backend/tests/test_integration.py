@@ -15,6 +15,7 @@ if not os.getenv('RUN_INTEGRATION'):
     pytest.skip('Set RUN_INTEGRATION=1 with a provisioned replica set', allow_module_level=True)
 
 import grpc
+from urllib.error import URLError
 from grpc_health.v1 import health_pb2, health_pb2_grpc
 from google.protobuf.timestamp_pb2 import Timestamp
 from pymongo import MongoClient
@@ -346,6 +347,60 @@ def test_projects_team_needs_no_login_and_request_number_is_applied_once(app, ad
     assert get(admin, h).out == 1
     events = list(app.root_db.audit.find({'operation': {'$in': ['checkout', 'return', 'allocate']}}))
     assert len(events) == 3 and {e['actor'] for e in events} == {'team:projects-team'}
+
+
+class QrBody:
+    def __init__(self, body, content_type='image/png'):
+        self.headers = {'Content-Type': content_type}
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+
+def test_projects_team_gets_a_qr_without_changing_stock(app, admin, monkeypatch):
+    h = admin.hw.CreateHardware(pb.CreateHardwareRequest(
+        name='Laptop', category='Computer', description='14 inch lab laptop', asset_tag=uuid4().hex, total=5,
+        reason='Test stock', request_id=rid()))
+    calls = []
+
+    def fake(url, timeout=5):
+        calls.append(url)
+        return QrBody(b'\x89PNG\r\n\x1a\nfake-qr')
+
+    def down(url, timeout=5):
+        raise URLError('down')
+
+    monkeypatch.setattr('app.service.urlopen', fake)
+    svc = app.caller(basic('projects-team'))
+    with fails(S.NOT_FOUND):
+        svc.hw.GetHardwareQr(pb.GetHardwareRequest(hardware_id='missing-pool'))
+    with fails(S.INVALID_ARGUMENT):
+        svc.hw.GetHardwareQr(pb.GetHardwareRequest(hardware_id='bad id'))
+    assert calls == []
+    monkeypatch.setattr('app.service.urlopen', down)
+    with fails(S.UNAVAILABLE):
+        svc.hw.GetHardwareQr(pb.GetHardwareRequest(hardware_id=h.id))
+    assert app.root_db.audit.count_documents({}) == 1
+    assert app.root_db.requests.count_documents({}) == 1
+    monkeypatch.setattr('app.service.urlopen', fake)
+    qr = svc.hw.GetHardwareQr(pb.GetHardwareRequest(hardware_id=h.id))
+    assert qr.hardware.id == h.id and qr.hardware.total == 5 and qr.hardware.available == 5
+    assert qr.payload.splitlines() == [
+        'hardware.v1', f'id:{h.id}', f'asset_tag:{h.asset_tag}', 'name:Laptop',
+        'description:14 inch lab laptop', 'category:Computer', 'status:active', 'serial:',
+    ]
+    assert qr.content_type == 'image/png' and qr.png.startswith(b'\x89PNG')
+    assert len(calls) == 1 and h.id in calls[0]
+    assert app.root_db.audit.count_documents({}) == 1
+    assert app.root_db.requests.count_documents({}) == 1
+    assert get(admin, h).total == 5
 
 
 def test_team_permissions_and_request_number_validation(app, admin):
