@@ -91,6 +91,12 @@ jobs:
     env:
       TF_DIR: infra/terraform/stacks/dev-preview
       TF_VAR_subscription_id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      # Terraform logs in to Azure itself with the job's GitHub OIDC token (the az CLI login above is
+      # a managed identity, which the azurerm provider refuses to reuse).
+      ARM_USE_OIDC: 'true'
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       TF_VAR_api_image: ${{ needs.images.outputs.api_image }}
       TF_VAR_web_image: ${{ needs.images.outputs.web_image }}
       TF_VAR_mongo_uri: ${{ secrets.ATLAS_DEV_MONGO_URI }}
@@ -137,7 +143,8 @@ jobs:
             -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
             -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
             -backend-config="key=preview/$RUN_ID.tfstate" \
-            -backend-config="use_azuread_auth=true"
+            -backend-config="use_azuread_auth=true" \
+            -backend-config="use_oidc=true"
           terraform apply -auto-approve -input=false
           echo "WEB_URL=$(terraform output -raw web_url)" >> "$GITHUB_ENV"
           echo "API_HOST=$(terraform output -raw api_fqdn)" >> "$GITHUB_ENV"
@@ -202,7 +209,8 @@ jobs:
             -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
             -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
             -backend-config="key=preview/$RUN_ID.tfstate" \
-            -backend-config="use_azuread_auth=true"
+            -backend-config="use_azuread_auth=true" \
+            -backend-config="use_oidc=true"
           terraform destroy -auto-approve -input=false
           docker run --rm -e MONGO_DATABASE mongo:8.0 mongosh --quiet "$TF_VAR_mongo_uri" \
             --eval 'db.getSiblingDB(process.env.MONGO_DATABASE).dropDatabase()'

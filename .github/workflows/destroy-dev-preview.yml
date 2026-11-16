@@ -22,6 +22,12 @@ jobs:
       MONGO_DATABASE: hw_${{ inputs.run_id }}
       # Destroy only needs the identity of the resources; the values below are never used.
       TF_VAR_subscription_id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      # Terraform logs in to Azure itself with the job's GitHub OIDC token (the az CLI login above is
+      # a managed identity, which the azurerm provider refuses to reuse).
+      ARM_USE_OIDC: 'true'
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       TF_VAR_run_id: ${{ inputs.run_id }}
       TF_VAR_api_image: unused
       TF_VAR_web_image: unused
@@ -48,7 +54,8 @@ jobs:
             -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT }}" \
             -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
             -backend-config="key=preview/$RUN_ID.tfstate" \
-            -backend-config="use_azuread_auth=true"
+            -backend-config="use_azuread_auth=true" \
+            -backend-config="use_oidc=true"
           terraform destroy -auto-approve -input=false
       - name: Drop the preview database and its state file
         run: |
