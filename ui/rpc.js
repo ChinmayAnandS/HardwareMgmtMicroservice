@@ -23,9 +23,11 @@
       const value = object[f.name];
       if (value === undefined || value === null) continue;
       // proto3 leaves default values off the wire unless the field tracks presence (`optional`).
-      if (!f.repeated && !f.optional && f.type !== 'message' && (value === 0 || value === '' || value === false)) continue;
+      if (!f.repeated && !f.optional && f.type !== 'message' && (value === 0 || value === '' || value === false
+          || (f.type === 'bytes' && value.length === 0))) continue;
       for (const item of f.repeated ? value : [value]) {
         if (f.type === 'string') { varint(out, f.n << 3 | 2); bytes(out, text.encode(item)); }
+        else if (f.type === 'bytes') { varint(out, f.n << 3 | 2); bytes(out, item); }
         else if (f.type === 'int64' || f.type === 'int32') varint(out, f.n << 3), varint(out, item);
         else if (f.type === 'bool') varint(out, f.n << 3), varint(out, item ? 1 : 0);
         else if (f.type === 'message') { varint(out, f.n << 3 | 2); bytes(out, encode(f.message, item)); }
@@ -83,6 +85,7 @@
       if (f.optional) continue;
       if (f.repeated) result[f.name] = [];
       else if (f.type === 'string') result[f.name] = '';
+      else if (f.type === 'bytes') result[f.name] = new Uint8Array();
       else if (f.type === 'bool') result[f.name] = false;
       else if (f.type !== 'message' && !f.optional) result[f.name] = 0;
     }
@@ -91,6 +94,7 @@
       if (!f) continue;
       let value;
       if (f.type === 'string') value = utf8.decode(raw);
+      else if (f.type === 'bytes') value = new Uint8Array(raw);
       else if (f.type === 'int64' || f.type === 'int32') value = signed(raw);
       else if (f.type === 'bool') value = raw !== 0n;
       else if (f.type === 'double') value = double(raw);
