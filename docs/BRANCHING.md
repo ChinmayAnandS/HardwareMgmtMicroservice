@@ -68,7 +68,13 @@ Choose **Squash and merge**. That combines your commits into one tidy commit on 
 Then delete the branch when GitHub offers.
 
 ### 6. Watch the dev preview and test by hand
-The merge triggers the **deploy-dev** workflow (GitHub → **Actions** tab):
+A merge into `dev` triggers the **deploy-dev** workflow (GitHub → **Actions** tab) when automatic
+previews are switched on. They are on while the repository variable `AUTO_DEPLOY_DEV` is `true`
+(Settings → Secrets and variables → Actions → **Variables** tab). Pushes that only change
+documentation (`*.md`, `docs/`) never deploy. To deploy while the switch is off, run it by hand:
+Actions → deploy-dev → **Run workflow**.
+
+When it runs, it:
 
 1. Builds the two images.
 2. Creates a brand-new copy of the app on Azure with its own empty database.

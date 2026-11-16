@@ -1,11 +1,23 @@
 # Push to dev: build both images, deploy a throwaway copy of the whole stack (API + website, own
 # database) to the dev Azure Container Apps environment with Terraform, run the end-to-end tests
-# against the real URLs, keep it up for a while so you can test by hand, then tear it all down. Needs the GitHub Environment "dev" (see
+# against the real URLs, keep it up for a while so you can test by hand, then tear it all down.
+#
+# A push only deploys when the repository variable AUTO_DEPLOY_DEV is "true" (Settings > Secrets and
+# variables > Actions > Variables). Unset or anything else means pushes are skipped; running the
+# workflow by hand always deploys. Needs the GitHub Environment "dev" (see
 # infra/terraform/README.md for the variables and secrets).
 name: deploy-dev
 on:
   push:
     branches: [dev]
+    # Changes that cannot affect the running app do not deploy a preview.
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.commitlintrc.yml'
+      - '.github/workflows/ci.yml'
+      - '.github/workflows/destroy-dev-preview.yml'
   workflow_dispatch:
     inputs:
       hold_minutes:
@@ -23,6 +35,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   images:
+    if: github.event_name == 'workflow_dispatch' || vars.AUTO_DEPLOY_DEV == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:

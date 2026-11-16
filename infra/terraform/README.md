@@ -43,6 +43,10 @@ Prod (`stacks/prod`) is not here yet: it will adopt the existing production envi
 
 ## What a push to `dev` does
 
+Pushes deploy only while the repository variable `AUTO_DEPLOY_DEV` is `true` (a *repository*
+variable under Settings > Secrets and variables > Actions > Variables, not an Environment one).
+Documentation-only pushes never deploy. Running the workflow by hand always deploys.
+
 `deploy-dev.yml` builds both images and pins them by digest, creates the database, applies
 `stacks/dev-preview` under a state key of its own (`preview/<run id>.tfstate`), waits for
 `/ready`, runs `pytest e2e` against the real URLs (browser through gRPC-Web, and native gRPC
