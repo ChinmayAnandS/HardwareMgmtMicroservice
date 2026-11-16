@@ -47,6 +47,18 @@ principal=$(az identity show -g "$state_rg" -n github-deploy-dev --query princip
 az identity federated-credential create -g "$state_rg" --identity-name github-deploy-dev -n github-dev \
   --issuer https://token.actions.githubusercontent.com --subject "repo:$repo:environment:dev" \
   --audiences api://AzureADTokenExchange -o none 2>/dev/null || true
+# New repositories send an ID-based subject (repo:owner@ownerId/name@repoId:...), so trust that form too.
+# Look the IDs up (public repositories need no token); skip with a warning if that fails.
+ids=$(curl -fsS "https://api.github.com/repos/$repo" | python -c "import json,sys; d=json.load(sys.stdin); print(d['owner']['id'], d['id'])" 2>/dev/null || true)
+if [[ -n $ids ]]; then
+  owner=${repo%%/*}; name=${repo#*/}; owner_id=${ids% *}; repo_id=${ids#* }
+  az identity federated-credential create -g "$state_rg" --identity-name github-deploy-dev -n github-dev-immutable \
+    --issuer https://token.actions.githubusercontent.com \
+    --subject "repo:${owner}@${owner_id}/${name}@${repo_id}:environment:dev" \
+    --audiences api://AzureADTokenExchange -o none 2>/dev/null || true
+else
+  echo "Warning: could not look up the GitHub IDs; if the login says 'No matching federated identity record', add the subject it prints." >&2
+fi
 az role assignment create --assignee-object-id "$principal" --assignee-principal-type ServicePrincipal \
   --role Contributor --scope "$(az group show -n "$dev_rg" --query id -o tsv)" -o none
 az role assignment create --assignee-object-id "$principal" --assignee-principal-type ServicePrincipal \

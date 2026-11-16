@@ -14,8 +14,18 @@ Prod (`stacks/prod`) is not here yet: it will adopt the existing production envi
 
 1. `az login`, then `bash infra/terraform/bootstrap.sh westus <github-owner>/<repo>`.
    It prints the values for step 3.
-2. Create the dev environment once, from your machine:
+2. Create the dev environment once, from your machine. Pick the block for your shell
+   (a trailing `\` only works in Bash, not PowerShell):
+
+   PowerShell:
+   ```powershell
+   cd infra\terraform\stacks\dev-base
+   terraform init "-backend-config=resource_group_name=hardware-tfstate" "-backend-config=storage_account_name=<TF_STATE_STORAGE_ACCOUNT>" "-backend-config=container_name=tfstate" "-backend-config=key=dev-base.tfstate" "-backend-config=use_azuread_auth=true"
+   terraform apply "-var=subscription_id=<subscription id>"
    ```
+
+   Bash:
+   ```bash
    cd infra/terraform/stacks/dev-base
    terraform init -backend-config="resource_group_name=hardware-tfstate" \
      -backend-config="storage_account_name=<TF_STATE_STORAGE_ACCOUNT>" \
