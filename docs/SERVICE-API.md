@@ -68,6 +68,19 @@ grpcurl -plaintext -proto proto/hardware/v1/hardware.proto -import-path proto \
   localhost:50051 hardware.v1.HardwareService/ListHardware
 ```
 
+**Server reflection** is on, so tools can discover the methods and message shapes from the running server
+without the `.proto` file (it exposes only the public contract; credentials are still checked on every call):
+
+```bash
+grpcurl host:443 list                                   # services
+grpcurl host:443 describe hardware.v1.HardwareService   # methods and messages
+grpcurl -H "authorization: $AUTH" -d '{"q":"laptop"}' host:443 hardware.v1.HardwareService/ListHardware
+```
+
+In Postman, create a gRPC request, enter `host:443` with TLS on, and choose **Use server reflection** in the
+method picker instead of importing the proto file. (Use `-plaintext` and `localhost:50051` against a local Docker
+Compose stack.) Set the environment variable `GRPC_REFLECTION=false` on the API to switch reflection off.
+
 Use the credentials from a server, never from browser code: anyone can read a code shipped to a browser. (The website signs in separately, with `AuthService.Login`, and receives a short-lived bearer token.)
 
 A team's code only works with its own team name, and the audit log records every change as `team:<name>`.

@@ -5,6 +5,7 @@ import os
 import secrets
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -17,6 +18,7 @@ if not os.getenv('RUN_INTEGRATION'):
 import grpc
 from urllib.error import URLError
 from grpc_health.v1 import health_pb2, health_pb2_grpc
+from grpc_reflection.v1alpha import reflection_pb2, reflection_pb2_grpc
 from google.protobuf.timestamp_pb2 import Timestamp
 from pymongo import MongoClient
 from pymongo.errors import OperationFailure
@@ -517,3 +519,26 @@ def test_health_and_readiness(app):
     stub = health_pb2_grpc.HealthStub(anonymous.channel)
     for service in ('', 'hardware.v1.HardwareService'):
         assert stub.Check(health_pb2.HealthCheckRequest(service=service)).status == health_pb2.HealthCheckResponse.SERVING
+
+
+def reflect(channel, **request):
+    stub = reflection_pb2_grpc.ServerReflectionStub(channel)
+    return next(iter(stub.ServerReflectionInfo(iter([reflection_pb2.ServerReflectionRequest(**request)]))))
+
+
+def test_server_reflection_describes_the_api_without_credentials(app):
+    channel = app.caller().channel
+    names = {s.name for s in reflect(channel, list_services='').list_services_response.service}
+    assert {'hardware.v1.HardwareService', 'hardware.v1.AuthService', 'hardware.v1.OpsService',
+            'grpc.health.v1.Health'} <= names
+    described = reflect(channel, file_containing_symbol='hardware.v1.HardwareService')
+    assert described.file_descriptor_response.file_descriptor_proto, 'the service definition should be returned'
+
+
+def test_server_reflection_can_be_turned_off(app):
+    off = Application(replace(app.cfg, reflection=False), '127.0.0.1:0').start()
+    try:
+        with grpc.insecure_channel(f'127.0.0.1:{off.port}') as channel, fails(S.UNIMPLEMENTED):
+            reflect(channel, list_services='')
+    finally:
+        off.stop()

@@ -76,7 +76,7 @@ Stop without deleting inventory: `docker compose down`. Permanently delete local
 
 ## gRPC API
 
-The contract is [`proto/hardware/v1/hardware.proto`](proto/hardware/v1/hardware.proto): `HardwareService` (inventory), `AuthService` (website sign-in) and `OpsService` (readiness), plus the standard `grpc.health.v1.Health`. Other teams generate a client from that file and call the service with their team name and code; see [Team access](docs/SERVICE-API.md) for credentials, request numbers and examples, and the [Response guide](docs/API-RESPONSES.md) for what every response field means.
+The contract is [`proto/hardware/v1/hardware.proto`](proto/hardware/v1/hardware.proto): `HardwareService` (inventory), `AuthService` (website sign-in) and `OpsService` (readiness), plus the standard `grpc.health.v1.Health` and gRPC server reflection (so Postman and `grpcurl` can discover the methods without the proto file). Other teams generate a client from that file and call the service with their team name and code; see [Team access](docs/SERVICE-API.md) for credentials, request numbers and examples, and the [Response guide](docs/API-RESPONSES.md) for what every response field means.
 
 | RPC | Behavior |
 |---|---|

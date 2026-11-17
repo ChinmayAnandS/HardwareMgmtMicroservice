@@ -15,6 +15,9 @@ class Settings:
     mongo_uri: str = secret('MONGO_URI')
     database: str = os.getenv('MONGO_DATABASE', 'hardware')
     grpc_port: int = int(os.getenv('GRPC_PORT', '50051'))
+    # Server reflection lets tools (Postman, grpcurl) list the methods without the .proto file. It shares
+    # only the method and message definitions, which are already public; set GRPC_REFLECTION=false to turn it off.
+    reflection: bool = os.getenv('GRPC_REFLECTION', 'true').lower() != 'false'
     # Team name -> code, for every team in teams.py whose TEAM_CODE_* variable is set.
     team_codes: dict = field(default_factory=lambda: {
         name: secret(team['env']) for name, team in TEAMS.items() if secret(team['env'])})

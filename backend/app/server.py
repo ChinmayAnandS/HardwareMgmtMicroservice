@@ -4,6 +4,7 @@ import signal
 from concurrent.futures import ThreadPoolExecutor
 import grpc
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
+from grpc_reflection.v1alpha import reflection
 from hardware.v1 import hardware_pb2 as pb, hardware_pb2_grpc as rpc
 from .auth import Authenticator
 from .config import Settings
@@ -36,6 +37,10 @@ class Application:
         health_pb2_grpc.add_HealthServicer_to_server(self.health, self.server)
         for service in ('', *(s.full_name for s in pb.DESCRIPTOR.services_by_name.values())):
             self.health.set(service, health_pb2.HealthCheckResponse.SERVING)
+        if self.cfg.reflection:
+            reflection.enable_server_reflection(
+                (*(s.full_name for s in pb.DESCRIPTOR.services_by_name.values()),
+                 health_pb2.DESCRIPTOR.services_by_name['Health'].full_name, reflection.SERVICE_NAME), self.server)
         self.port = self.server.add_insecure_port(address or f'[::]:{self.cfg.grpc_port}')
 
     def start(self):
