@@ -11,8 +11,8 @@ root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root / 'backend'))
 from hardware.v1 import hardware_pb2  # noqa: E402
 
-TYPES = {F.TYPE_STRING: 'string', F.TYPE_INT64: 'int64', F.TYPE_INT32: 'int32', F.TYPE_BOOL: 'bool',
-         F.TYPE_DOUBLE: 'double', F.TYPE_MESSAGE: 'message'}
+TYPES = {F.TYPE_STRING: 'string', F.TYPE_BYTES: 'bytes', F.TYPE_INT64: 'int64', F.TYPE_INT32: 'int32',
+         F.TYPE_BOOL: 'bool', F.TYPE_DOUBLE: 'double', F.TYPE_MESSAGE: 'message'}
 
 
 def describe(message):

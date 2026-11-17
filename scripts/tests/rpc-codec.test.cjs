@@ -42,6 +42,18 @@ test('encodes nested timestamps and skips unset fields', () => {
   assert.equal(toHex(bytes), '0a017032060880f2d6ca064003');
 });
 
+test('encodes and decodes protobuf bytes for the QR image', () => {
+  const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47]);
+  const encoded = encode('hardware.v1.HardwareQr', {content_type: 'image/png', png});
+  assert.equal(toHex(encoded), '1a09696d6167652f706e67220489504e47');
+  const back = decode('hardware.v1.HardwareQr', Uint8Array.from(encoded));
+  assert.equal(back.content_type, 'image/png');
+  assert.deepEqual(back.png, png);
+  const empty = decode('hardware.v1.HardwareQr', new Uint8Array());
+  assert.equal(empty.png.length, 0);
+  assert.equal(toHex(encode('hardware.v1.HardwareQr', {png: new Uint8Array()})), '');
+});
+
 test('false and zero are sent when set (presence matters)', () => {
   assert.equal(toHex(encode('hardware.v1.AllocateHardwareRequest', {quantity: 0})), '1800');
   assert.equal(toHex(encode('hardware.v1.RetireHardwareRequest', {confirmed: false})), '2000');

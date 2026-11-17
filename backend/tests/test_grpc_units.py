@@ -2,13 +2,14 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
+import json
 import pytest
 from google.protobuf.timestamp_pb2 import Timestamp
 from hardware.v1 import hardware_pb2 as pb
 from app import convert, models
 from app.auth import check_team_code, client_ip, peer_host
 from app.domain import Conflict
-from app.service import parse, request_number
+from app.service import HardwareServicer, parse, request_number
 from app.teams import OPERATIONS, TEAMS, allowed
 
 SERVICE = '/hardware.v1.HardwareService/'
@@ -251,3 +252,77 @@ def test_odbc_values_are_brace_quoted():
     from app.sql_store import odbc_value
     assert odbc_value('plain') == '{plain}'
     assert odbc_value('pa;ss=wo{rd}') == '{pa;ss=wo{rd}}}'
+
+
+class QrBody:
+    def __init__(self, body, content_type='image/png'):
+        self._body = body
+        self.headers = {} if content_type is None else {'Content-Type': content_type}
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+
+def qr_servicer():
+    return HardwareServicer(None, None, None, 'https://qr.example/create')
+
+
+def test_qr_payload_carries_identity_and_leaves_out_stock():
+    payload = json.loads(qr_servicer().hardware_qr_payload({
+        '_id': 'pool-1', 'asset_tag': 'POOL-LAPTOP', 'name': 'Laptop', 'description': '14 inch lab laptop',
+        'category': 'Computer', 'status': 'active', 'serial': 'SN-9', 'total': 5, 'out': 2, 'reserved': 3,
+    }))
+    assert payload == {
+        'id': 'pool-1', 'asset_tag': 'POOL-LAPTOP', 'name': 'Laptop', 'description': '14 inch lab laptop',
+        'category': 'Computer', 'status': 'active', 'serial': 'SN-9',
+    }
+    missing = json.loads(qr_servicer().hardware_qr_payload({
+        '_id': 'pool-1', 'asset_tag': 'POOL-LAPTOP', 'name': 'Laptop', 'category': 'Computer', 'status': 'active',
+    }))
+    assert missing['description'] == '' and missing['serial'] == ''
+    assert 'total' not in missing
+
+
+def test_fetch_qr_png_sends_the_payload_and_returns_the_image(monkeypatch):
+    seen = {}
+
+    def fake(url, timeout=5):
+        seen['url'], seen['timeout'] = url, timeout
+        return QrBody(b'\x89PNG\r\n\x1a\nfake')
+
+    monkeypatch.setattr('app.service.urlopen', fake)
+    png, content_type = qr_servicer().fetch_qr_png('https://qr.example/create', 'hardware.v1\nid:pool-1')
+    assert png.startswith(b'\x89PNG') and content_type == 'image/png'
+    assert seen['url'].startswith('https://qr.example/create?') and seen['timeout'] == 5
+    assert 'size=200x200' in seen['url'] and 'pool-1' in seen['url']
+
+
+def test_fetch_qr_png_defaults_the_content_type_when_the_provider_omits_it(monkeypatch):
+    monkeypatch.setattr('app.service.urlopen', lambda url, timeout=5: QrBody(b'\x89PNG\r\n\x1a\nfake', None))
+    png, content_type = qr_servicer().fetch_qr_png('https://qr.example/create', 'id:pool-1')
+    assert png.startswith(b'\x89PNG') and content_type == 'image/png'
+
+
+def test_fetch_qr_png_reports_an_unreachable_provider_as_unavailable(monkeypatch):
+    from urllib.error import URLError
+
+    def down(url, timeout=5):
+        raise URLError('down')
+
+    monkeypatch.setattr('app.service.urlopen', down)
+    with pytest.raises(Conflict) as caught:
+        qr_servicer().fetch_qr_png('https://qr.example/create', 'id:pool-1')
+    assert caught.value.code == 'UNAVAILABLE' and str(caught.value) == 'QR provider unavailable'
+
+
+def test_fetch_qr_png_rejects_a_body_that_is_not_a_png(monkeypatch):
+    monkeypatch.setattr('app.service.urlopen', lambda url, timeout=5: QrBody(b'<html>nope</html>', 'text/html'))
+    with pytest.raises(Conflict) as caught:
+        qr_servicer().fetch_qr_png('https://qr.example/create', 'id:pool-1')
+    assert caught.value.code == 'INTERNAL' and 'not a PNG' in str(caught.value)

@@ -29,7 +29,7 @@ class Application:
         self.server = grpc.server(ThreadPoolExecutor(max_workers=32, thread_name_prefix='rpc'),
                                   options=[('grpc.max_receive_message_length', MAX_REQUEST_BYTES)],
                                   maximum_concurrent_rpcs=128)
-        rpc.add_HardwareServiceServicer_to_server(HardwareServicer(auth, self.store, self.sql_store), self.server)
+        rpc.add_HardwareServiceServicer_to_server(HardwareServicer(auth, self.store, self.sql_store, self.cfg.qr_api_url), self.server)
         rpc.add_AuthServiceServicer_to_server(AuthServicer(auth, self.cfg), self.server)
         rpc.add_OpsServiceServicer_to_server(OpsServicer(self.store), self.server)
         self.health = health.HealthServicer()

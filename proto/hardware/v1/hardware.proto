@@ -35,6 +35,7 @@ service HardwareService {
   rpc CreateHardware(CreateHardwareRequest) returns (Hardware);
   rpc ListHardware(ListHardwareRequest) returns (ListHardwareResponse);
   rpc GetHardware(GetHardwareRequest) returns (Hardware);
+  rpc GetHardwareQr(GetHardwareRequest) returns (HardwareQr);
   rpc GetAvailability(GetHardwareRequest) returns (AvailabilityResponse);
   // Admin only.
   rpc UpdateHardware(UpdateHardwareRequest) returns (Hardware);
@@ -100,6 +101,13 @@ message Hardware {
   int64 available = 12;
   // total - reserved: units that can still be allocated to a project.
   int64 unallocated = 13;
+}
+
+message HardwareQr {
+  Hardware hardware = 1;
+  string payload = 2;
+  string content_type = 3;
+  bytes png = 4; 
 }
 
 // One project's share of one hardware pool.
