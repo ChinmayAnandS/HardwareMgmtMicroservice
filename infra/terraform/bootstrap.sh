@@ -6,8 +6,11 @@
 set -euo pipefail
 # Git Bash on Windows rewrites arguments that start with '/' (like --scope /subscriptions/...) into file paths.
 export MSYS_NO_PATHCONV=1
-region=${1:?Usage: bash infra/terraform/bootstrap.sh azure-region owner/repository}
+region=${1:?Usage: bash infra/terraform/bootstrap.sh azure-region owner/repository [shared-env-name] [shared-env-resource-group]}
 repo=${2:?GitHub owner/repository required}
+# The Container Apps environment the dev previews attach to (see stacks/dev-preview/main.tf).
+shared_env=${3:-managed-westus-1uv3hoo}
+shared_env_rg=${4:-hardware-grpc}
 subscription=$(az account show --query id -o tsv 2>/dev/null || true)
 if [[ -z $subscription ]]; then
   echo "No active Azure subscription. Run 'az login --tenant <tenant>' and 'az account set --subscription <id>' first;" >&2
@@ -63,6 +66,22 @@ az role assignment create --assignee-object-id "$principal" --assignee-principal
   --role Contributor --scope "$(az group show -n "$dev_rg" --query id -o tsv)" -o none
 az role assignment create --assignee-object-id "$principal" --assignee-principal-type ServicePrincipal \
   --role "Storage Blob Data Contributor" --scope "$state_id" -o none
+
+# Previews attach to the shared environment, which lives outside the dev resource group. A custom role
+# that can only read and join it lets the pipeline do that without being able to change or delete it
+# (or touch any prod app).
+role="Hardware Container Apps Environment Joiner"
+if [[ -z $(az role definition list --name "$role" --query "[0].name" -o tsv) ]]; then
+  az role definition create -o none --role-definition "{
+    \"Name\": \"$role\",
+    \"Description\": \"Read a Container Apps environment and create apps in it; nothing else.\",
+    \"Actions\": [\"Microsoft.App/managedEnvironments/read\", \"Microsoft.App/managedEnvironments/join/action\"],
+    \"AssignableScopes\": [\"/subscriptions/$subscription\"]
+  }"
+  sleep 20
+fi
+az role assignment create --assignee-object-id "$principal" --assignee-principal-type ServicePrincipal \
+  --role "$role" --scope "$(az containerapp env show -g "$shared_env_rg" -n "$shared_env" --query id -o tsv)" -o none
 
 echo
 echo "Add these as variables (not secrets) on the GitHub Environment named 'dev':"

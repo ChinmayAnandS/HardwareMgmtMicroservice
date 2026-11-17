@@ -36,9 +36,17 @@ variable "resource_group_name" {
   default = "hardware-dev-rg"
 }
 
+# This subscription allows exactly one standard (HTTP/2-capable) Container Apps environment, and prod
+# already uses it, so previews attach to it as separate apps in the dev resource group. They get their
+# own hostnames; prod's apps and URLs are untouched. See bootstrap.sh for the narrow role this needs.
 variable "environment_name" {
   type    = string
-  default = "hardware-dev-env"
+  default = "managed-westus-1uv3hoo"
+}
+
+variable "environment_resource_group_name" {
+  type    = string
+  default = "hardware-grpc"
 }
 
 variable "api_image" {
@@ -71,7 +79,7 @@ variable "dev_login_code" {
 
 data "azurerm_container_app_environment" "dev" {
   name                = var.environment_name
-  resource_group_name = var.resource_group_name
+  resource_group_name = var.environment_resource_group_name
 }
 
 module "apps" {
