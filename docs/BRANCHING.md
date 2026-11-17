@@ -93,6 +93,11 @@ Only `dev` may be merged into `main`; the **branch-flow** check blocks anything 
 Use **Create a merge commit** (not squash) for this one. Squashing `dev` into `main` makes the
 two branches drift apart and causes confusing conflicts next time.
 
+When the merge lands, **deploy-prod** builds that commit and releases it to production gradually: first to a
+private test URL, then 10% of traffic, 50%, and 100%, checking health at each step. If a check fails it puts
+everything back on the old version by itself. See [PRODUCTION.md](PRODUCTION.md). If something goes wrong
+later, Actions > **rollback-prod** returns to the previous version in seconds.
+
 ### 8. After a release, nothing else is needed
 `main` and `dev` now match. Start the next piece of work from step 1.
 

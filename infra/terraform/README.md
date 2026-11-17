@@ -3,11 +3,14 @@
 ```
 modules/hardware_apps/   the two Container Apps (gRPC API + website), reused by every stack
 stacks/dev-preview/      one throwaway API + website pair per pipeline run
+stacks/prod/             the live apps (imported), log storage and alerts
 bootstrap.sh             one-time: state storage, dev resource group, GitHub OIDC identity and roles
 ```
 
-Prod (`stacks/prod`) is not here yet: it will adopt the existing production apps with
-`terraform import`, because the environment's default domain is part of the URL other teams use.
+`stacks/prod` adopts the existing production apps with `terraform import` (the environment's default
+domain is part of the URL other teams use) and adds logging and alerts. See
+[docs/PRODUCTION.md](../../docs/PRODUCTION.md) for how releases, canary rollout and rollback work.
+`bootstrap-prod.sh` is its one-time setup.
 
 ## Why previews share the prod environment
 

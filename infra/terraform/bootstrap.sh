@@ -64,8 +64,9 @@ else
 fi
 az role assignment create --assignee-object-id "$principal" --assignee-principal-type ServicePrincipal \
   --role Contributor --scope "$(az group show -n "$dev_rg" --query id -o tsv)" -o none
+# Scoped to the dev container only, so this identity cannot read or change prod's state (tfstate-prod).
 az role assignment create --assignee-object-id "$principal" --assignee-principal-type ServicePrincipal \
-  --role "Storage Blob Data Contributor" --scope "$state_id" -o none
+  --role "Storage Blob Data Contributor" --scope "$state_id/blobServices/default/containers/tfstate" -o none
 
 # Previews attach to the shared environment, which lives outside the dev resource group. A custom role
 # that can only read and join it lets the pipeline do that without being able to change or delete it

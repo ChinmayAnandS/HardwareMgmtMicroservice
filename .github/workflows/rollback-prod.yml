@@ -1,0 +1,48 @@
+# Manual emergency rollback: send all traffic for the API, the website, or both back to the previous
+# revision (or to a revision you name). Takes seconds; no build, no Terraform.
+name: rollback-prod
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        description: Which app to roll back
+        type: choice
+        options: [both, api, web]
+        default: both
+      revision:
+        description: Revision name to roll back to (optional; default is the previous one). Only applies when a single app is chosen.
+        type: string
+        default: ''
+permissions:
+  contents: read
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: prod
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RESOURCE_GROUP: hardware-grpc
+      API_APP: hardware-grpc-app
+      WEB_APP: hardware-grpc-webapp
+      WHICH: ${{ inputs.app }}
+      REVISION: ${{ inputs.revision }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Roll back
+        run: |
+          case "$REVISION" in *[!a-z0-9-]*) echo "Revision names are lowercase letters, digits and hyphens"; exit 1;; esac
+          if [ -n "$REVISION" ] && [ "$WHICH" = both ]; then echo "Name a single app when giving a revision"; exit 1; fi
+          [ "$WHICH" = api ] || [ "$WHICH" = both ] && bash infra/scripts/rollback.sh "$RESOURCE_GROUP" "$API_APP" "$REVISION"
+          [ "$WHICH" = web ] || [ "$WHICH" = both ] && bash infra/scripts/rollback.sh "$RESOURCE_GROUP" "$WEB_APP" "$REVISION"
+          exit 0
