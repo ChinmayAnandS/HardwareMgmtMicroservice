@@ -139,3 +139,41 @@ def test_admin_can_check_out_and_return_from_the_ui():
         expect(dialog).not_to_be_visible()
         expect(row.locator('td').nth(2)).to_have_text('2 / 1')
         browser.close()
+
+
+def test_slow_list_load_does_not_add_a_second_table_after_a_faster_search():
+    """Two overlapping screen loads must leave one table (the later one), however the replies are ordered.
+
+    The Hardware tab starts a list load; an exact-ID search right after starts a second one. Against a
+    deployed API the list reply can arrive last, which used to append a second table under the first.
+    The list request is held back here so that order is guaranteed.
+    """
+    base = os.environ.get('TEST_BASE_URL', 'http://localhost:8080')
+    code = Path(os.environ['DEV_LOGIN_CODE_FILE']).read_text().strip()
+    team = Path(os.environ['TEAM_CODE_HARDWARE_ADMIN_FILE']).read_text().strip()
+    credentials = 'Basic ' + base64.b64encode(f'hardware-admin:{team}'.encode()).decode()
+    tag = 'RACE-' + uuid4().hex[:8]
+    with grpc_channel() as channel:
+        pool = rpc.HardwareServiceStub(channel).CreateHardware(pb.CreateHardwareRequest(
+            name=tag, category='Testing', asset_tag=tag, total=2, reason='Render race test',
+            request_id='e2e-race-' + tag), metadata=(('authorization', credentials),), timeout=30)
+    with sync_playwright() as p:
+        browser = p.chromium.launch(args=['--no-sandbox'])
+        page = browser.new_page(viewport={'width': 1100, 'height': 800})
+        page.goto(base + '/?local=1')
+        page.get_by_label('Local development code').fill(code)
+        page.get_by_role('button', name='Sign in locally').click()
+        expect(page.get_by_role('heading', name='Inventory dashboard')).to_be_visible()
+        held = []
+        page.route('**/hardware.v1.HardwareService/ListHardware', lambda route: held.append(route))
+        page.get_by_role('button', name='Hardware', exact=True).click()
+        page.get_by_label('Hardware ID (exact)').fill(pool.id)
+        page.get_by_role('button', name='Search / filter').click()
+        expect(page.locator('tr').filter(has_text=tag)).to_have_count(1)
+        assert held, 'the list request should have been held back'
+        for route in held:
+            route.continue_()
+        page.wait_for_timeout(1500)
+        expect(page.locator('table')).to_have_count(1)
+        expect(page.locator('tr').filter(has_text=tag)).to_have_count(1)
+        browser.close()

@@ -89,10 +89,20 @@ function showQr(h) {
     $('qr').showModal();
   });
 }
+// A screen load fetches data, then fills the page. If another load starts meanwhile (a quick click on a tab,
+// then a search), the older one must not append its table under the newer one when its reply arrives late:
+// it stops at its next data fetch once it has been superseded.
+const STALE=Symbol('stale');
+let renderSeq=0;
 async function render() {
+  const mine=++renderSeq;
+  const load=async(...args)=>{const reply=await api(...args); if(mine!==renderSeq) throw STALE; return reply;};
+  try { await renderScreen(load); } catch(e) { if(e!==STALE) throw e; }
+}
+async function renderScreen(load) {
   $('screen').replaceChildren(node('h2', {dashboard:'Inventory dashboard',hardware:'Hardware inventory',projects:'Project inventory',adjustments:'Inventory adjustments',checkouts:'Outstanding checkouts',transactions:'Immutable transaction history'}[screen]));
   if(screen==='dashboard') {
-    const s=await api('GetSummary'), cards=node('div');cards.className='cards';
+    const s=await load('GetSummary'), cards=node('div');cards.className='cards';
     const sum=k=>s.statuses.reduce((a,v)=>a+v[k],0), active=s.statuses.find(v=>v.status==='active');
     for(const [label,value] of [['Hardware records',sum('records')],['Total units',sum('total')],['Available active units',(active?.total||0)-(active?.out||0)],['Checked out units',sum('out')],['Damaged units',s.statuses.find(v=>v.status==='damaged')?.total||0],['Retired units',s.statuses.find(v=>v.status==='retired')?.total||0]]) {
       const card=node('div',label);card.className='card';card.append(node('strong',value));cards.append(card);
@@ -107,9 +117,9 @@ async function render() {
     const {hardware_id, ...listFilters}=listArgs();
     let data;
     if(hardware_id) {
-      try { data={items:[await api('GetHardware',{hardware_id})],total:1,size:25}; }
+      try { data={items:[await load('GetHardware',{hardware_id})],total:1,size:25}; }
       catch(e) { if(e.code!==5) throw e; data={items:[],total:0,size:25}; }
-    } else data=await api('ListHardware',listFilters);
+    } else data=await load('ListHardware',listFilters);
     table(['Name / asset','Category / status','Total','Available / unallocated','Actions'],data.items,h=>{
       const links=[button('Audit',()=>auditFor(h.id)),button('Allocations',()=>{screen='projects';filters={hardware_id:h.id};page=1;return render();}),button('QR code',()=>showQr(h))];
       if(writable&&h.status!=='retired') {
@@ -123,22 +133,22 @@ async function render() {
   if(screen==='projects') {
     $('screen').append(node('p','Project metadata is owned by the project service. Only immutable external project IDs, reservations and outstanding quantities are stored here.'));
     searchToolbar([['project_id','External project ID'],['hardware_id','Hardware ID']]);
-    const known=await api('GetSummary'), choices=node('datalist');choices.id='project-ids';
+    const known=await load('GetSummary'), choices=node('datalist');choices.id='project-ids';
     for(const project of known.projects){const option=node('option');option.value=project.project_id;choices.append(option);}
     $('screen').append(choices);document.querySelector('[name=project_id]').setAttribute('list','project-ids');
     if(writable) $('screen').append(button('Set project allocation',()=>openEditor('Set allocation',{},[field('hardware_id','Hardware ID'),field('project_id','External project ID'),field('quantity','New allocated total',1,'number')],async v=>{const h=await api('GetHardware',{hardware_id:v.hardware_id});if(!confirm(`Current total: ${h.total}; reserved: ${h.reserved}; checked out: ${h.out}. Confirm new allocation ${v.quantity}?`))throw new Error('Change cancelled');return mutate('AllocateHardware',{hardware_id:v.hardware_id,project_id:v.project_id,quantity:Number(v.quantity),reason:v.reason,expected_version:h.version});})));
-    const data=await api('ListAllocations',listArgs());
+    const data=await load('ListAllocations',listArgs());
     table(['Project ID','Hardware ID','Allocated','Out','Actions'],data.items,a=>[a.project_id,a.hardware_id,a.quantity,a.out,actions(button('Audit',()=>auditFor(a.hardware_id,a.project_id)),...(writable?[button('Check out',()=>checkoutEditor({hardware_id:a.hardware_id,project_id:a.project_id})),button('Modify',async()=>{const h=await api('GetHardware',{hardware_id:a.hardware_id});openEditor('Modify allocation',{allocation:a,hardware:h},[field('quantity','New allocated total',a.quantity,'number')],v=>mutate('AllocateHardware',{...v,hardware_id:a.hardware_id,project_id:a.project_id,quantity:Number(v.quantity),expected_version:h.version}));})]:[]))]);pager(data);return;
   }
   if(screen==='checkouts') {
     searchToolbar([['project_id','Project ID'],['hardware_id','Hardware ID'],['user_id','Borrower ID'],['outstanding','Show','select',['true','false']]]);
     $('screen').append(node('p','Administrators can check out reserved stock, process returns and correct recorded return quantities here. A checkout needs stock already allocated to the project. Set Show=false to include fully returned checkouts.'));
     if(writable) $('screen').append(button('Check out stock',()=>checkoutEditor()));
-    const data=await api('ListCheckouts',listArgs());
+    const data=await load('ListCheckouts',listArgs());
     table(['Checkout / hardware ID','Project / borrower ID','Quantity / returned','Actions'],data.items,c=>[c.id+' / '+c.hardware_id,c.project_id+' / '+c.user_id,`${c.quantity} / ${c.returned}`,actions(button('Audit',()=>auditFor(c.hardware_id,c.project_id)),...(writable?[button('Return',()=>openEditor('Process partial or full return',c,[field('quantity','Quantity to return',c.outstanding,'number')],v=>mutate('ReturnCheckout',{...v,checkout_id:c.id,quantity:Number(v.quantity),expected_version:c.version}))),button('Correct return',()=>openEditor('Correct cumulative returned quantity',c,[field('returned','Correct cumulative quantity returned',c.returned,'number')],v=>mutate('CorrectCheckout',{...v,checkout_id:c.id,returned:Number(v.returned),expected_version:c.version,confirmed:true})))]:[]))]);pager(data);return;
   }
   searchToolbar([['project_id','Project ID'],['hardware_id','Hardware ID'],['actor_id','Administrator actor ID'],['user_id','Borrower ID'],['start','Start (ISO 8601 with timezone)'],['end','End (ISO 8601 with timezone)']]);
-  const data=await api('ListTransactions',listArgs());
+  const data=await load('ListTransactions',listArgs());
   table(['Timestamp','Actor / operation','Entity / project','Reason / changes'],data.items,a=>{const d=node('details');d.append(node('summary',a.reason),node('pre',JSON.stringify({before:a.before,after:a.after},null,2)));return [rpc.toIso(a.timestamp),a.actor+' / '+a.operation,a.entity+' / '+(a.project_id||''),d];});pager(data);
 }
 async function initialize() {
