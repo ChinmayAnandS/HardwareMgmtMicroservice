@@ -141,16 +141,30 @@ function showQr(h) {
   });
 }
 async function showAvailability(h) {
-  const dialog = $('availability'), results = $('availability-results');
+  const dialog = node('dialog');
+  dialog.className = 'availability-dialog';
+  const title = `${h.name} / ${h.asset_tag} availability`;
+  dialog.setAttribute('aria-label', title);
+
+  const form = node('form');
+  form.method = 'dialog';
+  const results = node('div');
   const status = node('p', 'Checking availability…');
   status.setAttribute('role', 'status');
-  $('availability-title').textContent = `${h.name} / ${h.asset_tag}`;
-  results.replaceChildren(status);
+  results.append(status);
+
+  const footer = node('div');
+  footer.className = 'dialog-actions';
+  footer.append(node('button', 'Close'));
+  form.append(node('h2', title), results, footer);
+  dialog.append(form);
+  dialog.addEventListener('close', () => dialog.remove(), {once: true});
+  document.body.append(dialog);
   dialog.showModal();
 
   try {
     const reply = await api('GetAvailability', {hardware_id: h.id});
-    if (!dialog.open || status.parentNode !== results) return;
+    if (!dialog.open) return;
     const available = reply.hardware.available;
     status.textContent = `${nf.format(available)} ${available === 1 ? 'unit' : 'units'} on hand`;
     if (reply.availability === 'available') return;
@@ -169,7 +183,7 @@ async function showAvailability(h) {
       ], results);
     }
   } catch (e) {
-    if (dialog.open && status.parentNode === results) status.textContent = `Could not check availability. ${e.message}`;
+    if (dialog.open) status.textContent = `Could not check availability. ${e.message}`;
   }
 }
 // A screen load fetches data, then fills the page. If another load starts meanwhile (a quick click on a tab,
