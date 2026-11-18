@@ -30,3 +30,9 @@ def hardware(doc):
 
 def checkout(doc):
     return to_pb(pb.Checkout, doc, outstanding=doc['quantity'] - doc['returned'])
+
+
+def audit_event(doc):
+    after = (doc.get('after') or {}).get('hardware') or {}
+    before = (doc.get('before') or {}).get('hardware') or {}
+    return to_pb(pb.AuditEvent, doc, hardware_name=after.get('name') or before.get('name'))

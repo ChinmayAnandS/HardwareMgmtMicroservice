@@ -121,6 +121,8 @@ message Allocation {
   // Of those, units checked out right now. The project can still check out quantity - out.
   int64 out = 5;
   int64 version = 6;
+  // Current name of the hardware pool, if available.
+  optional string hardware_name = 7;
 }
 
 message Checkout {
@@ -136,6 +138,8 @@ message Checkout {
   google.protobuf.Timestamp created_at = 8;
   // quantity - returned.
   int64 outstanding = 9;
+  // Current name of the hardware pool, included in ListCheckouts when available.
+  optional string hardware_name = 10;
 }
 
 message AuditEvent {
@@ -156,6 +160,8 @@ message AuditEvent {
   google.protobuf.Struct after = 11;
   // A hash of the caller and the request number, not the request number itself.
   string request_id = 12;
+  // Hardware name recorded in the audit snapshot, if available.
+  optional string hardware_name = 13;
 }
 
 // ---------------------------------------------------------------------------------------------

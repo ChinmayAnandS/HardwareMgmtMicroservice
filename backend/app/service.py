@@ -159,6 +159,14 @@ class HardwareServicer(rpc.HardwareServiceServicer):
         cursor = db.find(query).sort(sort or [('_id', 1)]).skip(offset).limit(size).max_time_ms(5000)
         return clean(list(cursor)), db.count_documents(query, maxTimeMS=5000)
 
+    def with_hardware_names(self, items):
+        if not items:
+            return items
+        hardware_ids = {item['hardware_id'] for item in items}
+        hardware = self.store.db.hardware.find({'_id': {'$in': list(hardware_ids)}}, {'name': 1}).max_time_ms(5000)
+        names = {item['_id']: item.get('name') for item in hardware}
+        return [dict(item, hardware_name=names.get(item['hardware_id'])) for item in items]
+
     @guarded()
     def ListHardware(self, request, context, actor):
         q = parse(models.HardwareQuery, request)
@@ -237,6 +245,7 @@ class HardwareServicer(rpc.HardwareServiceServicer):
         q = parse(models.AllocationQuery, request)
         query = {k: v for k, v in {'project_id': q.project_id, 'hardware_id': q.hardware_id}.items() if v}
         items, total = self.listing('allocations', query, q.page, q.size)
+        items = self.with_hardware_names(items)
         return pb.ListAllocationsResponse(items=[convert.to_pb(pb.Allocation, i) for i in items],
                                           total=total, page=q.page, size=q.size)
 
@@ -248,6 +257,7 @@ class HardwareServicer(rpc.HardwareServiceServicer):
         if q.outstanding:
             query['$expr'] = {'$lt': ['$returned', '$quantity']}
         items, total = self.listing('checkouts', query, q.page, q.size, [('created_at', -1), ('_id', -1)])
+        items = self.with_hardware_names(items)
         return pb.ListCheckoutsResponse(items=[convert.checkout(i) for i in items], total=total, page=q.page, size=q.size)
 
     @guarded()
@@ -260,8 +270,8 @@ class HardwareServicer(rpc.HardwareServiceServicer):
         if q.start or q.end:
             query['timestamp'] = {k: v for k, v in {'$gte': q.start, '$lte': q.end}.items() if v}
         items, total = self.listing('audit', query, q.page, q.size, [('timestamp', -1), ('_id', -1)])
-        return pb.ListTransactionsResponse(items=[convert.to_pb(pb.AuditEvent, i) for i in items],
-                                           total=total, page=q.page, size=q.size)
+        events = [convert.audit_event(item) for item in items]
+        return pb.ListTransactionsResponse(items=events, total=total, page=q.page, size=q.size)
 
     @guarded()
     def GetSummary(self, request, context, actor):

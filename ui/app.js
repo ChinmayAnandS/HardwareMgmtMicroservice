@@ -42,6 +42,9 @@ function meter(fraction) {
 // The number stays the cell's text; the bar is decoration for a quick read.
 function cellMeter(text, fraction) { const d = node('div'); d.className = 'cell-meter'; d.append(node('span', text), meter(fraction)); return d; }
 const mono = d => { for (const n of d.children) n.classList.add('mono'); return d; };
+function hardwareLabel({hardware_name, hardware_id}) {
+  return hardware_name ? stack(hardware_name, hardware_id) : hardware_id;
+}
 const primary = b => { b.classList.add('primary'); return b; };
 const danger = b => { b.classList.add('danger'); return b; };
 const tipEl = $('tip');
@@ -295,18 +298,34 @@ async function renderScreen(load) {
     $('screen').append(choices);document.querySelector('[name=project_id]').setAttribute('list','project-ids');
     if(writable) $('screen').append(primary(button('Set project allocation',()=>openEditor('Set allocation',{},[field('hardware_id','Hardware ID'),field('project_id','External project ID'),field('quantity','New allocated total',1,'number')],async v=>{const h=await api('GetHardware',{hardware_id:v.hardware_id});if(!confirm(`Current total: ${h.total}; reserved: ${h.reserved}; checked out: ${h.out}. Confirm new allocation ${v.quantity}?`))throw new Error('Change cancelled');return mutate('AllocateHardware',{hardware_id:v.hardware_id,project_id:v.project_id,quantity:Number(v.quantity),reason:v.reason,expected_version:h.version});}))));
     const data=await load('ListAllocations',listArgs());
-    table(['Project ID','Hardware ID','Allocated','Out','Actions'],data.items,a=>[a.project_id,a.hardware_id,a.quantity,a.out,actions(button('Audit',()=>auditFor(a.hardware_id,a.project_id)),...(writable?[button('Check out',()=>checkoutEditor({hardware_id:a.hardware_id,project_id:a.project_id})),button('Modify',async()=>{const h=await api('GetHardware',{hardware_id:a.hardware_id});openEditor('Modify allocation',{allocation:a,hardware:h},[field('quantity','New allocated total',a.quantity,'number')],v=>mutate('AllocateHardware',{...v,hardware_id:a.hardware_id,project_id:a.project_id,quantity:Number(v.quantity),expected_version:h.version}));})]:[]))]);pager(data);return;
+    table(['Project ID','Hardware name / ID','Allocated','Out','Actions'],data.items,a=>[
+      a.project_id,hardwareLabel(a),a.quantity,a.out,
+      actions(button('Audit',()=>auditFor(a.hardware_id,a.project_id)),...(writable?[
+        button('Check out',()=>checkoutEditor({hardware_id:a.hardware_id,hardware_name:a.hardware_name,project_id:a.project_id})),
+        button('Modify',async()=>{const h=await api('GetHardware',{hardware_id:a.hardware_id});openEditor('Modify allocation',{allocation:a,hardware:h},[field('quantity','New allocated total',a.quantity,'number')],v=>mutate('AllocateHardware',{...v,hardware_id:a.hardware_id,project_id:a.project_id,quantity:Number(v.quantity),expected_version:h.version}));})
+      ]:[]))
+    ]);pager(data);return;
   }
   if(screen==='checkouts') {
     searchToolbar([['project_id','Project ID'],['hardware_id','Hardware ID'],['user_id','Borrower ID'],['outstanding','Show','select',['true','false']]]);
     $('screen').append(node('p','Administrators can check out reserved stock, process returns and correct recorded return quantities here. A checkout needs stock already allocated to the project. Set Show=false to include fully returned checkouts.'));
     if(writable) $('screen').append(primary(button('Check out stock',()=>checkoutEditor())));
     const data=await load('ListCheckouts',listArgs());
-    table(['Checkout / hardware ID','Project / borrower ID','Quantity / returned','Actions'],data.items,c=>[mono(stack(c.id,c.hardware_id)),stack(c.project_id,c.user_id),cellMeter(`${c.quantity} / ${c.returned}`,c.quantity?c.returned/c.quantity:0),actions(button('Audit',()=>auditFor(c.hardware_id,c.project_id)),...(writable?[button('Return',()=>openEditor('Process partial or full return',c,[field('quantity','Quantity to return',c.outstanding,'number')],v=>mutate('ReturnCheckout',{...v,checkout_id:c.id,quantity:Number(v.quantity),expected_version:c.version}))),button('Correct return',()=>openEditor('Correct cumulative returned quantity',c,[field('returned','Correct cumulative quantity returned',c.returned,'number')],v=>mutate('CorrectCheckout',{...v,checkout_id:c.id,returned:Number(v.returned),expected_version:c.version,confirmed:true})))]:[]))]);pager(data);return;
+    table(['Hardware name / ID','Checkout ID','Project / borrower ID','Quantity / returned','Actions'],data.items,c=>[
+      hardwareLabel(c),mono(stack(c.id)),stack(c.project_id,c.user_id),cellMeter(`${c.quantity} / ${c.returned}`,c.quantity?c.returned/c.quantity:0),
+      actions(button('Audit',()=>auditFor(c.hardware_id,c.project_id)),...(writable?[
+        button('Return',()=>openEditor('Process partial or full return',c,[field('quantity','Quantity to return',c.outstanding,'number')],v=>mutate('ReturnCheckout',{...v,checkout_id:c.id,quantity:Number(v.quantity),expected_version:c.version}))),
+        button('Correct return',()=>openEditor('Correct cumulative returned quantity',c,[field('returned','Correct cumulative quantity returned',c.returned,'number')],v=>mutate('CorrectCheckout',{...v,checkout_id:c.id,returned:Number(v.returned),expected_version:c.version,confirmed:true})))
+      ]:[]))
+    ]);pager(data);return;
   }
   searchToolbar([['project_id','Project ID'],['hardware_id','Hardware ID'],['actor_id','Administrator actor ID'],['user_id','Borrower ID'],['start','Start (ISO 8601 with timezone)'],['end','End (ISO 8601 with timezone)']]);
   const data=await load('ListTransactions',listArgs());
-  table(['Timestamp','Actor / operation','Entity / project','Reason / changes'],data.items,a=>{const d=node('details');d.append(node('summary',a.reason),node('pre',JSON.stringify({before:a.before,after:a.after},null,2)));return [rpc.toIso(a.timestamp),a.actor+' / '+a.operation,a.entity+' / '+(a.project_id||''),d];});pager(data);
+  table(['Timestamp','Actor / operation','Hardware name / ID','Entity / project','Reason / changes'],data.items,a=>{
+    const details = node('details');
+    details.append(node('summary',a.reason),node('pre',JSON.stringify({before:a.before,after:a.after},null,2)));
+    return [rpc.toIso(a.timestamp),a.actor+' / '+a.operation,hardwareLabel(a),stack(a.entity,a.project_id),details];
+  });pager(data);
 }
 async function initialize() {
   const me=await api('Me');writable=me.roles.includes('Hardware.Admin');
