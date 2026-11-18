@@ -137,6 +137,38 @@ function showQr(h) {
     $('qr').showModal();
   });
 }
+async function showAvailability(h) {
+  const dialog = $('availability'), results = $('availability-results');
+  const status = node('p', 'Checking availability…');
+  status.setAttribute('role', 'status');
+  $('availability-title').textContent = `${h.name} / ${h.asset_tag}`;
+  results.replaceChildren(status);
+  dialog.showModal();
+
+  try {
+    const reply = await api('GetAvailability', {hardware_id: h.id});
+    if (!dialog.open || status.parentNode !== results) return;
+    const available = reply.hardware.available;
+    status.textContent = `${nf.format(available)} ${available === 1 ? 'unit' : 'units'} on hand`;
+    if (reply.availability === 'available') return;
+
+    results.append(node('h3', 'Vendor alternatives'));
+    if (reply.alternative_lookup_status === 'temporarily_unavailable') {
+      results.append(node('p', 'Vendor lookup is temporarily unavailable. Try again later.'));
+    } else if (!reply.alternatives.length) {
+      results.append(node('p', 'No matching vendor records found.'));
+    } else {
+      results.append(node('p', 'Matches come from procurement history. Contact the vendor to confirm current stock.'));
+      table(['Vendor', 'Commodity', 'Recorded unit price'], reply.alternatives, alternative => [
+        stack(alternative.vendor || 'Unknown vendor', alternative.source_unit),
+        stack(alternative.commodity || 'Unspecified commodity', alternative.category),
+        alternative.unit_price == null ? '—' : nf.format(alternative.unit_price),
+      ], results);
+    }
+  } catch (e) {
+    if (dialog.open && status.parentNode === results) status.textContent = `Could not check availability. ${e.message}`;
+  }
+}
 // A screen load fetches data, then fills the page. If another load starts meanwhile (a quick click on a tab,
 // then a search), the older one must not append its table under the newer one when its reply arrives late:
 // it stops at its next data fetch once it has been superseded.
@@ -246,6 +278,7 @@ async function renderScreen(load) {
     } else data=await load('ListHardware',listFilters);
     table(['Name / asset','Category / status','Total','Available / unallocated','Actions'],data.items,h=>{
       const links=[button('Audit',()=>auditFor(h.id)),button('Allocations',()=>{screen='projects';filters={hardware_id:h.id};page=1;return render();}),button('QR code',()=>showQr(h))];
+      if (screen === 'hardware') links.unshift(button('Availability', () => showAvailability(h)));
       if(writable&&h.status!=='retired') {
         links.push(button('Edit',()=>openEditor('Edit hardware',h,[field('name','Name',h.name),field('category','Category',h.category),field('asset_tag','Asset tag',h.asset_tag),field('serial','Serial',h.serial,'text',false),field('description','Description',h.description,'text',false),select('status','Status',['active','damaged','under_maintenance'],h.status)],v=>mutate('UpdateHardware',{...v,hardware_id:h.id,expected_version:h.version}))));
         links.push(button('Adjust stock',()=>{const delta=field('delta','Change in total (negative to remove)',1,'number');delta.querySelector('input').min='-1000000';openEditor('Adjust total stock',h,[delta],v=>mutate('AdjustHardware',{...v,hardware_id:h.id,delta:Number(v.delta),expected_version:h.version,confirmed:true}));}));
